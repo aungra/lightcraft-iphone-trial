@@ -1,0 +1,989 @@
+diff --git a/apps/lightcraft-web/index.html b/apps/lightcraft-web/index.html
+index b088ad1..a2b40fc 100644
+--- a/apps/lightcraft-web/index.html
++++ b/apps/lightcraft-web/index.html
+@@ -2,13 +2,17 @@
+ <html lang="en">
+ <head>
+   <meta charset="utf-8">
+-  <meta name="viewport" content="width=device-width, initial-scale=1">
+-  <title>LightCraft</title>
++  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
++  <title>LightCraft — iPhone trial</title>
+   <link rel="icon" href="data:,">
+   <meta name="description" content="LightCraft: open-source photo library and raw developer, running in your browser (WASM).">
++  <!-- Unofficial iPhone layout build based on LightCraft. See the deployment repository for changes. -->
+   <style>
+     :root { color-scheme: dark; }
+     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #1c1c1c; }
++    #lightcraft_viewport { position: fixed; left: 0; top: 0; width: 100%; height: 100%; height: 100svh; height: 100dvh; overflow: hidden; }
++    /* Padding on a canvas changes pointer coordinates. Inset its containing block instead. */
++    #lightcraft_stage { position: absolute; inset: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
+     canvas#lightcraft_canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+     #lightcraft_loading {
+       position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+@@ -18,9 +22,42 @@
+   </style>
+ </head>
+ <body>
++  <div id="lightcraft_viewport"><div id="lightcraft_stage">
+   <canvas id="lightcraft_canvas"></canvas>
+   <div id="lightcraft_loading">Loading LightCraft…</div>
+   <div id="lightcraft_status" aria-live="polite"></div>
++  </div></div>
++  <script type="module" id="lightcraft-viewport-module">
++    // Use the visible Safari area, including keyboard/toolbar changes. Do not reflow the UI
++    // while the user pinch-zooms: the browser should magnify the existing layout instead.
++    export function viewportBox(viewport) {
++      if (!viewport || !Number.isFinite(viewport.scale) || Math.abs(viewport.scale - 1) > 0.01) return null;
++      if (![viewport.width, viewport.height, viewport.offsetLeft, viewport.offsetTop].every(Number.isFinite)) return null;
++      if (viewport.width <= 0 || viewport.height <= 0) return null;
++      return {
++        left: Math.max(0, viewport.offsetLeft), top: Math.max(0, viewport.offsetTop),
++        width: viewport.width, height: viewport.height,
++      };
++    }
++    if (typeof window !== "undefined" && window.visualViewport) {
++      const host = document.getElementById("lightcraft_viewport");
++      let frame = 0;
++      let previous = "";
++      const update = () => {
++        frame = 0;
++        const box = viewportBox(window.visualViewport);
++        if (!box || !host) return;
++        const key = JSON.stringify(box);
++        if (key === previous) return;
++        previous = key;
++        for (const [name, value] of Object.entries(box)) host.style[name] = `${value}px`;
++      };
++      const schedule = () => { if (!frame) frame = requestAnimationFrame(update); };
++      for (const event of ["resize", "scroll"]) window.visualViewport.addEventListener(event, schedule, { passive: true });
++      for (const event of ["resize", "orientationchange", "pageshow", "focusin", "focusout"]) window.addEventListener(event, schedule, { passive: true });
++      update();
++    }
++  </script>
+   <script type="module">
+     import init, { start, command } from "./lightcraft_web.js";
+     (async () => {
+diff --git a/crates/engine/src/files/load.rs b/crates/engine/src/files/load.rs
+index 0e396dd..7c34976 100644
+--- a/crates/engine/src/files/load.rs
++++ b/crates/engine/src/files/load.rs
+@@ -1,3 +1,4 @@
++// Modified for the unofficial iPhone trial (2026-11-16): use a web-compatible RAW timer.
+ use super::colour::bin_factor;
+ use super::preview::{fit_box, load_embedded_preview};
+ use super::probe::preview_reason;
+@@ -105,7 +106,8 @@ fn load_bytes_now(
+         };
+         // single outlier photosites, replaced in the mosaic before anything is developed from it (#1345)
+         if with.outliers {
+-            let t = std::time::Instant::now();
++            // The native std clock panics on wasm32-unknown-unknown, even when profiling is off.
++            let t = web_time::Instant::now();
+             let n = raw.suppress_hot_pixels_with(super::hot_pixel_limit());
+             if lightcraft_pipeline::profiling() {
+                 eprintln!("[profile] raw outliers: {n} photosites replaced in {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
+@@ -450,6 +452,34 @@ fn camera_tone_of<T>(profile: bool, look: Option<T>, curve: Option<T>, kept: Opt
+     if profile { curve.or(kept).or(look) } else { look.or(curve).or(kept) }
+ }
+ 
++#[cfg(test)]
++mod raw_outlier_tests {
++    use super::{RawDecode, load_bytes_decoded};
++
++    /// A newly imported raw on the web reached an unsupported std clock before removing hot pixels.
++    /// Generic defaults keep removal off for rendered files and legacy edits; use the raw-import
++    /// settings, as the web worker does, and keep the correction itself enabled.
++    #[test]
++    fn imported_raw_hot_pixel_removal_decodes_sensor_data() {
++        let (w, h) = (64usize, 64usize);
++        let clean = vec![2000; w * h];
++        let mut hot = clean.clone();
++        hot[32 * w + 32] = 9000;
++        let dng = |data| crate::tests_xmp::synthetic_dng_of(w, h, "RGGB", data, None, Default::default());
++        let clean_dng = dng(clean);
++        let hot_dng = dng(hot);
++        let outliers = lightcraft_develop::DevelopSettings::for_raw(6500.0, 0.0).removes_hot_pixels();
++        assert!(outliers, "a newly imported raw must exercise hot pixel removal");
++        let (corrected, info) = load_bytes_decoded(&hot_dng, w, RawDecode { dcp: None, outliers }).unwrap();
++        let (expected, _) = load_bytes_decoded(&clean_dng, w, RawDecode::default()).unwrap();
++        let (uncorrected, _) = load_bytes_decoded(&hot_dng, w, RawDecode::default()).unwrap();
++        assert!(info.raw, "this must develop the sensor data, not an embedded preview");
++        assert_eq!((corrected.width, corrected.height), (w, h));
++        assert_eq!(corrected.data, expected.data, "the isolated hot photosite is still corrected");
++        assert_ne!(uncorrected.data, expected.data, "the fixture must contain a visible hot photosite");
++    }
++}
++
+ #[cfg(test)]
+ mod camera_tone_tests {
+     use super::camera_tone_of;
+diff --git a/crates/ui-egui/src/app/frame.rs b/crates/ui-egui/src/app/frame.rs
+index 66e377a..a77b1a1 100644
+--- a/crates/ui-egui/src/app/frame.rs
++++ b/crates/ui-egui/src/app/frame.rs
+@@ -1,3 +1,4 @@
++// Modified for the unofficial iPhone layout trial (2026-11-16).
+ use super::{
+     LightcraftApp, docking, drop_overlay, export_task, focus_scan, import, lightroom_import, merge, monotonic_ms, panels, pick, recheck, shortcuts,
+     slideshow_export, state, sync, tasks, theme, updates_ui, widgets,
+@@ -470,12 +471,16 @@ impl LightcraftApp {
+         }
+         // Order matters: earlier panels take the full edge (top bar spans the window; the tool strip,
+         // right panels and left panel run to the bottom; the bottom bar sits between them).
+-        panels::topbar::show(self, ui);
+-        panels::library_problem::banner(self, ui);
+-        panels::strip::show(self, ui);
+-        // filled: the gaps the dock leaves between its panes show chrome, not the dark clear colour
+-        let chrome = theme::Tokens::get(&ctx).chrome;
+-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(chrome)).show(ui, |ui| docking::show(self, ui));
++        if panels::compact::active(&ctx) {
++            panels::compact::show(self, ui);
++        } else {
++            panels::topbar::show(self, ui);
++            panels::library_problem::banner(self, ui);
++            panels::strip::show(self, ui);
++            // filled: the gaps the dock leaves between its panes show chrome, not the dark clear colour
++            let chrome = theme::Tokens::get(&ctx).chrome;
++            egui::CentralPanel::default().frame(egui::Frame::NONE.fill(chrome)).show(ui, |ui| docking::show(self, ui));
++        }
+         self.lights_out(&ctx);
+         panels::second::show(self, &ctx);
+         if notice_blocks {
+diff --git a/crates/ui-egui/src/dialogs.rs b/crates/ui-egui/src/dialogs.rs
+index 91d9dd2..11d7489 100644
+--- a/crates/ui-egui/src/dialogs.rs
++++ b/crates/ui-egui/src/dialogs.rs
+@@ -1,3 +1,4 @@
++// Modified for the unofficial iPhone layout trial (2026-11-16).
+ //! Modal dialogs (new album, rename, create preset, choose settings to copy, export, about, shortcuts).
+ 
+ use lightcraft_develop::{ControlSpec, Section, SettingsGroup, Track};
+@@ -220,6 +221,14 @@ pub(crate) fn prepare(app: &LightcraftApp, ui: &mut egui::Ui) {
+     }
+ }
+ 
++fn viewport_limit(screen: egui::Rect, compact: bool, top: Option<f32>) -> egui::Vec2 {
++    if !compact {
++        return egui::Vec2::INFINITY;
++    }
++    let vertical_margin = top.map_or(16.0, |top| top + 8.0);
++    egui::vec2((screen.width() - 16.0).max(1.0), (screen.height() - vertical_margin).max(1.0))
++}
++
+ /// Draw the open dialog. `blocked` is true when a quit prompt or settings notice was on screen at
+ /// the start of this frame: the dialog is still drawn (its state is preserved), but none of its raw
+ /// keyboard/backdrop handling may act. The caller freezes `blocked` for the whole frame so the
+@@ -239,6 +248,7 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
+     }
+     let t = Tokens::get(ctx);
+     let screen = ctx.content_rect();
++    let compact = crate::panels::compact::active(ctx);
+     // The backdrop is an area below the dialog window (a bare `Middle` layer painter would be
+     // painted after every area — i.e. over the dialog too). Like a macOS sheet, the dialog leaves
+     // the integrated title bar lit: the window buttons the OS draws over it do not dim.
+@@ -278,9 +288,10 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
+     // row stays where it is (centred like the others, the row jumped with each tab's height)
+     let settings = matches!(dlg, Dialog::Settings { .. });
+     let top = (screen.height() * 0.08).clamp(DIALOG_SCREEN_MARGIN, 96.0);
++    let limit = viewport_limit(screen, compact, settings.then_some(top));
+     let body_max =
+         if settings { screen.height() - top - DIALOG_SCREEN_MARGIN - chrome } else { screen.height() - 2.0 * DIALOG_SCREEN_MARGIN - chrome }
+-            .max(DIALOG_MIN_BODY);
++            .max(if compact { 0.0 } else { DIALOG_MIN_BODY });
+     let widest_id = window_id.with("widest");
+     let widest = if settings { ctx.data(|d| d.get_temp::<f32>(widest_id)).unwrap_or(0.0).min(screen.width() * 0.9) } else { 0.0 };
+     let mut content_w = 0.0f32;
+@@ -291,24 +302,31 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
+         .id(window_id)
+         .collapsible(false)
+         .resizable(import)
+-        .vscroll(import)
++        // Narrow dialogs keep fixed-width legacy controls reachable by scrolling, instead of
++        // allowing their content to grow the window beyond Safari's usable viewport.
++        .hscroll(compact)
++        .vscroll(import || compact)
+         .resize(|r| if import { r.default_height(crate::import::DIALOG_SIZE[1]) } else { r })
+         .frame(frame)
+         .anchor(if settings { egui::Align2::CENTER_TOP } else { egui::Align2::CENTER_CENTER }, [0.0, if settings { top } else { 0.0 }])
+         .min_width(widest)
+-        .default_width(match dlg {
+-            Dialog::Import { .. } => crate::import::DIALOG_SIZE[0],
+-            Dialog::SmartRules { .. } => 680.0,
+-            Dialog::AllMetadata { .. } => 620.0,
+-            Dialog::Print => 1100.0,
+-            Dialog::FaceModel { .. } => 460.0,
+-            Dialog::LightroomCatalog { .. } => 440.0,
+-            Dialog::LightroomDestination { .. } => 480.0,
+-            Dialog::Welcome { .. } => 460.0,
+-            Dialog::LensDatabase { .. } => 440.0,
+-            Dialog::ManageEffects { .. } => 560.0,
+-            _ => 380.0,
+-        })
++        .max_size(limit)
++        .default_width(
++            (match dlg {
++                Dialog::Import { .. } => crate::import::DIALOG_SIZE[0],
++                Dialog::SmartRules { .. } => 680.0,
++                Dialog::AllMetadata { .. } => 620.0,
++                Dialog::Print => 1100.0,
++                Dialog::FaceModel { .. } => 460.0,
++                Dialog::LightroomCatalog { .. } => 440.0,
++                Dialog::LightroomDestination { .. } => 480.0,
++                Dialog::Welcome { .. } => 460.0,
++                Dialog::LensDatabase { .. } => 440.0,
++                Dialog::ManageEffects { .. } => 560.0,
++                _ => 380.0_f32,
++            })
++            .min(limit.x),
++        )
+         .show(ctx, |ui| {
+             // Disabled, not skipped: the dialog keeps its layout and state, but a raw event in the
+             // first prompt frame cannot toggle a checkbox or press a button underneath it. The
+@@ -318,6 +336,9 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
+                 ui.disable();
+             }
+             ui.spacing_mut().item_spacing.y = 8.0;
++            if compact {
++                ui.spacing_mut().interact_size.y = 44.0;
++            }
+             body_h = dialog_body(ui, (!import && !print).then_some(title.as_str()), body_max, |ui| {
+                 dialog_content(app, ui, &t, body_max, &mut confirm, &mut close, &mut dlg)
+             });
+@@ -2043,6 +2064,10 @@ fn about_body(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, dlg: &mut
+         2 => crate::credits::models_ui(ui),
+         _ => {
+             ui.label(egui::RichText::new("LightCraft").font(t.semibold(20.0)).color(t.text));
++            #[cfg(target_arch = "wasm32")]
++            ui.label(
++                "Unofficial iPhone trial based on LightCraft by the ArtCraft team. This modified build is not supported by the upstream project.",
++            );
+             ui.label(crate::i18n::tr_format!("Version {} — a clean-room, pure-Rust photo library and raw developer.", env!("CARGO_PKG_VERSION")));
+             ui.label(crate::i18n::tr_format!(
+                 "MIT OR Apache-2.0. Fonts: {} (OFL). Icons: original.",
+diff --git a/crates/ui-egui/src/dialogs/frame.rs b/crates/ui-egui/src/dialogs/frame.rs
+index d6e8ea8..f716c45 100644
+--- a/crates/ui-egui/src/dialogs/frame.rs
++++ b/crates/ui-egui/src/dialogs/frame.rs
+@@ -1,3 +1,4 @@
++// Modified for the unofficial iPhone layout trial (2026-11-16).
+ use super::export::LABEL_W;
+ use super::{BACKDROP_SHOWN, ControlSpec, Dialog, LightcraftApp, Tokens};
+ 
+@@ -116,6 +117,10 @@ pub(super) fn num(ui: &mut egui::Ui, spec: &ControlSpec, v: &mut f64) -> bool {
+ 
+ pub(super) fn field<R>(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+     let t = Tokens::get(ui.ctx());
++    if crate::panels::compact::active(ui.ctx()) {
++        ui.label(egui::RichText::new(crate::i18n::tr(label)).color(t.text_label));
++        return ui.horizontal_wrapped(add).inner;
++    }
+     ui.horizontal(|ui| {
+         ui.allocate_ui_with_layout(egui::vec2(LABEL_W, 24.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+             ui.set_min_width(LABEL_W);
+diff --git a/crates/ui-egui/src/docking.rs b/crates/ui-egui/src/docking.rs
+index 97cd8ac..c3593aa 100644
+--- a/crates/ui-egui/src/docking.rs
++++ b/crates/ui-egui/src/docking.rs
+@@ -1,3 +1,4 @@
++// Modified for the unofficial iPhone layout trial (2026-11-16).
+ //! Application panel identities and persistence around the shared docking renderer.
+ //! Document contents remain owned by their existing view implementations.
+ 
+@@ -269,6 +270,9 @@ fn publish_visibility(app: &mut crate::LightcraftApp, workspace: &Workspace) {
+ }
+ 
+ pub(crate) fn exposed(app: &crate::LightcraftApp, panel: Panel) -> bool {
++    if let Some(ctx) = app.tasks.repaint.as_ref().filter(|ctx| crate::panels::compact::active(ctx)) {
++        return crate::panels::compact::exposed(app, ctx, panel);
++    }
+     app.ui.docking.as_ref().is_none_or(|workspace| exposed_in(workspace, panel))
+ }
+ 
+@@ -289,6 +293,10 @@ pub(crate) fn reveal_command(app: &mut crate::LightcraftApp, id: &str) -> Result
+         None
+     };
+     if let Some(panel) = panel {
++        if let Some(ctx) = app.tasks.repaint.as_ref().filter(|ctx| crate::panels::compact::active(ctx)) {
++            crate::panels::compact::reveal(ctx, panel);
++            return Ok(());
++        }
+         let mut workspace = app.ui.docking.clone().unwrap_or_else(|| from_ui(app));
+         sync(&mut workspace, app)?;
+         reveal(&mut workspace, panel)?;
+@@ -423,25 +431,7 @@ pub fn show(app: &mut crate::LightcraftApp, ui: &mut egui::Ui) {
+         },
+     );
+     if let Some(mut canvas) = canvas {
+-        let ui = &mut canvas;
+-        crate::panels::bottombar::show(app, ui);
+-        let bg = if matches!(
+-            app.ui.view,
+-            crate::state::ViewMode::Detail | crate::state::ViewMode::Compare | crate::state::ViewMode::Survey | crate::state::ViewMode::Reference
+-        ) {
+-            t.canvas
+-        } else {
+-            t.grid_bg
+-        };
+-        crate::panels::compare::prepare(app);
+-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(bg)).show(ui, |ui| match app.ui.view {
+-            crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid => crate::panels::grid::show(app, ui),
+-            crate::state::ViewMode::Detail => crate::panels::detail::show(app, ui),
+-            crate::state::ViewMode::Compare => crate::panels::compare::show_compare(app, ui),
+-            crate::state::ViewMode::Survey => crate::panels::compare::show_survey(app, ui),
+-            crate::state::ViewMode::Reference => crate::panels::compare::show_reference(app, ui),
+-            crate::state::ViewMode::People => crate::panels::people::show(app, ui),
+-        });
++        show_canvas(app, &mut canvas);
+     }
+ 
+     let rendered = workspace;
+@@ -466,6 +456,29 @@ pub fn show(app: &mut crate::LightcraftApp, ui: &mut egui::Ui) {
+     }
+ }
+ 
++/// The photo view shared by the desktop dock and the compact workspace.
++pub(crate) fn show_canvas(app: &mut crate::LightcraftApp, ui: &mut egui::Ui) {
++    let t = crate::theme::Tokens::get(ui.ctx());
++    crate::panels::bottombar::show(app, ui);
++    let bg = if matches!(
++        app.ui.view,
++        crate::state::ViewMode::Detail | crate::state::ViewMode::Compare | crate::state::ViewMode::Survey | crate::state::ViewMode::Reference
++    ) {
++        t.canvas
++    } else {
++        t.grid_bg
++    };
++    crate::panels::compare::prepare(app);
++    egui::CentralPanel::default().frame(egui::Frame::NONE.fill(bg)).show(ui, |ui| match app.ui.view {
++        crate::state::ViewMode::PhotoGrid | crate::state::ViewMode::SquareGrid => crate::panels::grid::show(app, ui),
++        crate::state::ViewMode::Detail => crate::panels::detail::show(app, ui),
++        crate::state::ViewMode::Compare => crate::panels::compare::show_compare(app, ui),
++        crate::state::ViewMode::Survey => crate::panels::compare::show_survey(app, ui),
++        crate::state::ViewMode::Reference => crate::panels::compare::show_reference(app, ui),
++        crate::state::ViewMode::People => crate::panels::people::show(app, ui),
++    });
++}
++
+ /// Keep the established ui.set width controls connected to the panel's dock column, floating
+ /// window or parent split.
+ pub(crate) fn set_widths(state: &mut crate::UiState, params: &Value) -> Result<(), String> {
+diff --git a/crates/ui-egui/src/menus/menu_level.rs b/crates/ui-egui/src/menus/menu_level.rs
+index 6118129..99201ff 100644
+--- a/crates/ui-egui/src/menus/menu_level.rs
++++ b/crates/ui-egui/src/menus/menu_level.rs
+@@ -1,3 +1,4 @@
++// Modified for the unofficial iPhone layout trial (2026-11-16).
+ //! Menus bounded by the window (#189). egui keeps a popup inside the window: a menu or submenu
+ //! taller than the room below the menu bar was slid up over the bar, which hid the menu titles,
+ //! and the pointer that had rested on the title then rested on the menu's first row and opened
+@@ -93,11 +94,21 @@ pub fn level(ui: &mut Ui, depth: usize, bar_bottom: Option<f32>, rows: impl FnOn
+     // 0.37's `ScrollAreaState.offset` is private: a scroll requested after layout is applied as
+     // the next frame's start offset instead of writing the state directly.
+     let scroll_to = ctx.data_mut(|d| d.remove_temp::<f32>(key.with("scroll-to")));
+-    let mut area = egui::ScrollArea::vertical()
++    let compact = crate::panels::compact::active(&ctx);
++    let width = (screen.width() - 2.0 * EDGE - ui.spacing().menu_margin.sum().x - 2.0).max(1.0);
++    if compact {
++        ui.set_max_width(width);
++    }
++    let mut area = (if compact { egui::ScrollArea::both() } else { egui::ScrollArea::vertical() })
+         .id_salt(("menu-level", depth))
++        .max_width(if compact { width } else { f32::INFINITY })
+         .max_height(height)
+         .min_scrolled_height(height)
+-        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
++        .scroll_bar_visibility(if compact {
++            egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded
++        } else {
++            egui::scroll_area::ScrollBarVisibility::AlwaysHidden
++        })
+         .scroll_source(egui::containers::scroll_area::ScrollSource::ALL);
+     if let Some(y) = scroll_to {
+         area = area.vertical_scroll_offset(y);
+diff --git a/crates/ui-egui/src/panels.rs b/crates/ui-egui/src/panels.rs
+index ed9c45f..617ee45 100644
+--- a/crates/ui-egui/src/panels.rs
++++ b/crates/ui-egui/src/panels.rs
+@@ -1,8 +1,10 @@
++// Modified for the unofficial iPhone layout trial (2026-11-16).
+ //! Window regions and panels.
+ 
+ pub mod activity;
+ pub mod bottombar;
+ pub mod chips;
++pub mod compact;
+ pub mod compare;
+ pub mod crop_overlay;
+ pub mod denoise;
+diff --git a/crates/ui-egui/src/panels/compact.rs b/crates/ui-egui/src/panels/compact.rs
+new file mode 100644
+index 0000000..798ce35
+--- /dev/null
++++ b/crates/ui-egui/src/panels/compact.rs
+@@ -0,0 +1,260 @@
++//! Width-driven phone workspace. It never rewrites the saved desktop docking arrangement.
++
++use egui::{Align2, Id, Rect, Sense, pos2, vec2};
++use serde_json::json;
++
++use crate::LightcraftApp;
++use crate::icons::{Icon, paint};
++use crate::state::RightPanel;
++use crate::theme::Tokens;
++use crate::widgets::{icon_button, register};
++
++const TOUCH: f32 = 44.0;
++const BAR: f32 = 58.0;
++
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++enum Page {
++    #[default]
++    Photos,
++    Library,
++    Menu,
++}
++
++/// Use the compact workspace before the normal columns consume the photo's minimum width.
++/// This is in egui points, so Retina pixels and browser zoom do not change the fit decision.
++pub(crate) fn needed(width: f32, t: &Tokens) -> bool {
++    width < crate::state::LEFT_WIDTH.default + crate::state::RIGHT_WIDTH.default + crate::state::MIN_PHOTO_WIDTH + t.strip_w
++}
++
++pub(crate) fn active(ctx: &egui::Context) -> bool {
++    // This trial changes the browser frontend only. A narrow native window must retain its
++    // saved dock and desktop controls; headless tests explicitly emulate the browser host.
++    let browser = cfg!(target_arch = "wasm32");
++    #[cfg(test)]
++    let browser = browser || ctx.data(|d| d.get_temp::<bool>(Id::unique("compact-web-host"))).unwrap_or(false);
++    browser && needed(ctx.content_rect().width(), &Tokens::get(ctx))
++}
++
++#[cfg(test)]
++fn emulate_web_host(ctx: &egui::Context) {
++    ctx.data_mut(|d| d.insert_temp(Id::unique("compact-web-host"), true));
++}
++
++fn page(ctx: &egui::Context) -> Page {
++    ctx.data(|d| d.get_temp(Id::unique("compact-page"))).unwrap_or_default()
++}
++
++fn set_page(ctx: &egui::Context, page: Page) {
++    ctx.data_mut(|d| d.insert_temp(Id::unique("compact-page"), page));
++}
++
++pub(crate) fn exposed(app: &LightcraftApp, ctx: &egui::Context, panel: crate::docking::Panel) -> bool {
++    use crate::docking::Panel;
++    match panel {
++        Panel::Canvas => page(ctx) == Page::Photos,
++        Panel::Library => page(ctx) == Page::Library,
++        Panel::Tools => page(ctx) == Page::Photos && !app.ui.presets && app.ui.right != RightPanel::None,
++        Panel::Presets => page(ctx) == Page::Photos && app.ui.presets,
++    }
++}
++
++pub(crate) fn reveal(ctx: &egui::Context, panel: crate::docking::Panel) {
++    set_page(ctx, if panel == crate::docking::Panel::Library { Page::Library } else { Page::Photos });
++}
++
++pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
++    let t = Tokens::get(ui.ctx());
++    if app.ui.focus_search {
++        set_page(ui.ctx(), Page::Menu);
++    }
++    toolbar(app, ui, &t);
++    super::library_problem::banner(app, ui);
++    if page(ui.ctx()) != Page::Photos {
++        app.canvas_rect = None;
++        app.image_rect = None;
++    }
++    egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.chrome)).show(ui, |ui| match page(ui.ctx()) {
++        Page::Library => {
++            register(ui, "compact:library", ui.max_rect());
++            egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, |ui| super::left::show(app, ui));
++        }
++        Page::Menu => {
++            register(ui, "compact:menu", ui.max_rect());
++            if menu(app, ui) {
++                set_page(ui.ctx(), Page::Photos);
++            }
++        }
++        Page::Photos => photos(app, ui),
++    });
++}
++
++fn toolbar(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens) {
++    egui::Panel::top("compact-toolbar").exact_size(BAR).frame(egui::Frame::NONE.fill(t.chrome)).show(ui, |ui| {
++        crate::widgets::announce_region(ui, egui::accesskit::Role::Toolbar, crate::i18n::tr("Top bar"));
++        let full = ui.max_rect();
++        let width = full.width() / 5.0;
++        for (index, (id, label, icon)) in [
++            ("library", "Library", Icon::Sidebar),
++            ("import", "Import", Icon::Plus),
++            ("edit", "Edit", Icon::Sliders),
++            ("share", "Export", Icon::Share),
++            ("menu", "Menu", Icon::More),
++        ]
++        .into_iter()
++        .enumerate()
++        {
++            let r = Rect::from_min_size(pos2(full.left() + index as f32 * width, full.top()), vec2(width, BAR));
++            let enabled = !matches!(id, "edit" | "share") || app.session.active().is_some();
++            let resp = ui.interact(r, Id::unique(("compact-action", id)), if enabled { Sense::click() } else { Sense::hover() });
++            let label = crate::i18n::tr(label);
++            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, label));
++            register(ui, format!("compact:{id}-button"), r);
++            let selected = match id {
++                "library" => page(ui.ctx()) == Page::Library,
++                "menu" => page(ui.ctx()) == Page::Menu,
++                "edit" => page(ui.ctx()) == Page::Photos && (app.ui.right != RightPanel::None || app.ui.presets),
++                _ => false,
++            };
++            if selected || (enabled && resp.hovered()) {
++                ui.painter().rect_filled(r.shrink(2.0), 4.0, t.hover);
++            }
++            let color = if enabled { t.text } else { t.text_disabled };
++            paint(ui.painter(), Rect::from_center_size(pos2(r.center().x, r.top() + 18.0), vec2(22.0, 22.0)), icon, color);
++            ui.painter().text(pos2(r.center().x, r.bottom() - 13.0), Align2::CENTER_CENTER, label, t.font(11.0), color);
++            if resp.clicked() && enabled {
++                activate(app, ui.ctx(), id);
++            }
++        }
++    });
++}
++
++fn activate(app: &mut LightcraftApp, ctx: &egui::Context, id: &str) {
++    match id {
++        "library" => set_page(ctx, if page(ctx) == Page::Library { Page::Photos } else { Page::Library }),
++        "menu" => set_page(ctx, if page(ctx) == Page::Menu { Page::Photos } else { Page::Menu }),
++        "edit" => {
++            let close = page(ctx) == Page::Photos && (app.ui.right != RightPanel::None || app.ui.presets);
++            set_page(ctx, Page::Photos);
++            let _ = app.run(if close { "panel.close" } else { "panel.edit" }, json!({}));
++        }
++        "import" | "share" => {
++            if let Err(error) = app.run(if id == "import" { "file.addPhotos" } else { "dialog.export" }, json!({})) {
++                app.toast_error(ctx, error);
++            }
++        }
++        _ => {}
++    }
++}
++
++fn photos(app: &mut LightcraftApp, ui: &mut egui::Ui) {
++    if app.ui.right != RightPanel::None || app.ui.presets {
++        // Half the available height, capped on tall phones. Even landscape/keyboard-sized
++        // viewports retain half for the photo; controls scroll instead of stealing that space.
++        let height = (ui.available_height() * 0.5).min(380.0);
++        egui::Panel::bottom("compact-tools").exact_size(height).frame(egui::Frame::NONE).show(ui, |ui| {
++            register(ui, "compact:tools", ui.max_rect());
++            tools(app, ui);
++            egui::ScrollArea::horizontal()
++                .id_salt("compact-tools-x")
++                .auto_shrink([false, false])
++                .show(ui, |ui| if app.ui.presets { super::presets::show(app, ui) } else { super::right::show(app, ui) });
++        });
++    }
++    register(ui, "compact:photos", ui.available_rect_before_wrap());
++    crate::docking::show_canvas(app, ui);
++}
++
++fn tools(app: &mut LightcraftApp, ui: &mut egui::Ui) {
++    egui::ScrollArea::horizontal().id_salt("compact-tool-tabs").auto_shrink([false, true]).show(ui, |ui| {
++        ui.horizontal(|ui| {
++            ui.spacing_mut().item_spacing.x = 0.0;
++            for (id, label, icon, panel) in [
++                ("edit", "Edit", Icon::Sliders, RightPanel::Edit),
++                ("crop", "Crop & Rotate", Icon::Crop, RightPanel::Crop),
++                ("presets", "Presets", Icon::Presets, RightPanel::None),
++                ("remove", "Remove", Icon::Eraser, RightPanel::Remove),
++                ("masking", "Masking", Icon::Mask, RightPanel::Masking),
++                ("info", "Info", Icon::Info, RightPanel::Info),
++                ("versions", "Versions", Icon::Versions, RightPanel::Versions),
++            ] {
++                let selected = if id == "presets" { app.ui.presets } else { !app.ui.presets && app.ui.right == panel };
++                if icon_button(ui, &format!("compact-{id}"), icon, vec2(TOUCH, TOUCH), selected, true, label).clicked() {
++                    if id != "presets" {
++                        app.ui.presets = false;
++                    }
++                    let _ = app.run(&format!("panel.{id}"), json!({}));
++                }
++            }
++        });
++    });
++}
++
++/// A drill-in menu uses one full-width level, never side-by-side popups. The shared command
++/// model supplies enabled/checked state and translated labels, exactly as on desktop.
++fn menu(app: &mut LightcraftApp, ui: &mut egui::Ui) -> bool {
++    use crate::menubar::MenuNode;
++    let roots: Vec<_> = crate::menubar::menu_bar(app).into_iter().map(|(label, children)| MenuNode::Submenu { label, children }).collect();
++    let key = Id::unique("compact-menu-path");
++    let mut path: Vec<usize> = ui.data(|d| d.get_temp(key)).unwrap_or_default();
++    let mut rows = roots.as_slice();
++    let mut title = "Menu";
++    let mut valid = 0;
++    // Menus can contain user data; bound depth and safely drop a stale selection after changes.
++    for index in path.iter().take(16) {
++        let Some(MenuNode::Submenu { label, children }) = rows.get(*index) else { break };
++        rows = children;
++        title = label;
++        valid += 1;
++    }
++    path.truncate(valid);
++    let mut selected = None;
++    let mut enter = None;
++    let mut back = false;
++    ui.horizontal(|ui| {
++        back = icon_button(ui, "compact-menu-back", Icon::Back, vec2(TOUCH, TOUCH), false, !path.is_empty(), "Back").clicked();
++        ui.label(crate::i18n::tr(title));
++    });
++    super::topbar::compact_search(app, ui);
++    egui::ScrollArea::vertical().id_salt(("compact-menu-list", &path)).min_scrolled_height(0.0).auto_shrink([false, false]).show(ui, |ui| {
++        ui.spacing_mut().interact_size.y = TOUCH;
++        for (index, node) in rows.iter().enumerate() {
++            match node {
++                MenuNode::Separator => {
++                    ui.separator();
++                }
++                MenuNode::Submenu { label, .. } => {
++                    let resp = ui.add_sized(vec2(ui.available_width(), TOUCH), egui::Button::new(crate::i18n::tr(label)).wrap());
++                    register(ui, format!("menusub:{label}"), resp.rect);
++                    if resp.clicked() && path.len() < 16 {
++                        enter = Some(index);
++                    }
++                }
++                MenuNode::Item { id, params, label, enabled, checked, .. } => {
++                    let label = crate::menubar::display_item_label(id, params, label);
++                    let button = egui::Button::new(label).selected(*checked == Some(true)).wrap();
++                    let resp = ui.add_enabled_ui(*enabled, |ui| ui.add_sized(vec2(ui.available_width(), TOUCH), button)).inner;
++                    register(ui, format!("menuitem:{id}"), resp.rect);
++                    if resp.clicked() {
++                        selected = Some((id.clone(), params.clone()));
++                    }
++                }
++            }
++        }
++    });
++    if back {
++        path.pop();
++    } else if let Some(index) = enter {
++        path.push(index);
++    }
++    ui.data_mut(|d| d.insert_temp(key, path));
++    if let Some((id, params)) = selected {
++        if let Err(error) = crate::menubar::run_item(app, &id, params) {
++            app.toast_error(ui.ctx(), error);
++        }
++        return true;
++    }
++    false
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/ui-egui/src/panels/compact/tests.rs b/crates/ui-egui/src/panels/compact/tests.rs
+new file mode 100644
+index 0000000..a38f2ed
+--- /dev/null
++++ b/crates/ui-egui/src/panels/compact/tests.rs
+@@ -0,0 +1,174 @@
++use super::*;
++use crate::headless::Headless;
++use crate::state::{Dialog, ViewMode};
++use std::time::Duration;
++
++fn app(size: [f32; 2], scale: f32) -> Headless {
++    let mut app = LightcraftApp::new(lightcraft_engine::Session::new(), Default::default());
++    app.ui.view = ViewMode::Detail;
++    app.ui.right = RightPanel::Edit;
++    app.ui.left_panel = true;
++    let mut h = Headless::new(app, size, scale);
++    emulate_web_host(&h.view.ctx);
++    step(&mut h);
++    h
++}
++
++fn step(h: &mut Headless) {
++    for _ in 0..4 {
++        h.step();
++    }
++}
++
++fn rect(h: &Headless, id: &str) -> Rect {
++    h.app.widgets.iter().find(|(name, _)| name == id).unwrap_or_else(|| panic!("missing {id}")).1
++}
++
++fn click(h: &mut Headless, id: &str) {
++    let result = h.request("ui.clickWidget", json!({"id": id}), Duration::from_secs(5));
++    assert_eq!(result["ok"], true, "{result}");
++    step(h);
++}
++
++#[test]
++fn compact_phone_controls_and_photo_stay_inside_the_viewport() {
++    for size in [[320.0, 568.0], [402.0, 874.0], [874.0, 402.0], [402.0, 350.0]] {
++        for scale in [1.0, 2.0, 3.0] {
++            let h = app(size, scale);
++            let screen = Rect::from_min_size(egui::Pos2::ZERO, vec2(size[0], size[1]));
++            let buttons: Vec<_> = ["library", "import", "edit", "share", "menu"].iter().map(|id| rect(&h, &format!("compact:{id}-button"))).collect();
++            for (index, button) in buttons.iter().enumerate() {
++                assert!(screen.contains_rect(*button), "{size:?} at {scale}: {button:?}");
++                assert!(button.width() >= TOUCH && button.height() >= TOUCH);
++                for other in buttons.iter().skip(index + 1) {
++                    assert!(!button.intersects(*other) || button.intersect(*other).width() <= 0.0);
++                }
++            }
++            let tools = rect(&h, "compact:tools");
++            let photos = rect(&h, "compact:photos");
++            assert!(screen.contains_rect(tools));
++            assert!(screen.contains_rect(photos));
++            assert!(photos.bottom() <= tools.top() + 1.0);
++            assert!(photos.width() >= size[0] - 2.0);
++            assert!(photos.height() >= (size[1] - BAR) * 0.45);
++            let canvas = h.app.canvas_rect.unwrap();
++            assert!(screen.contains_rect(canvas) && canvas.height() >= 60.0, "photo squeezed out: {canvas:?}");
++            assert!(!h.app.widgets.iter().any(|(id, _)| id == "panel:left_panel" || id == "panel:right_panel"));
++        }
++    }
++}
++
++#[test]
++fn compact_drill_in_menu_has_one_bounded_level_and_a_back_button() {
++    for size in [[320.0, 568.0], [402.0, 874.0], [874.0, 402.0]] {
++        let mut h = app(size, 1.0);
++        click(&mut h, "compact:menu-button");
++        click(&mut h, "menusub:File");
++        assert_eq!(page(&h.view.ctx), Page::Menu);
++        let screen = Rect::from_min_size(egui::Pos2::ZERO, vec2(size[0], size[1]));
++        assert!(screen.contains_rect(rect(&h, "compact:menu")));
++        let import = rect(&h, "menuitem:file.addPhotos");
++        assert!(import.left() >= screen.left() && import.right() <= screen.right());
++        assert!(import.height() >= TOUCH);
++        assert!(screen.contains_rect(rect(&h, "icon:compact-menu-back")));
++        click(&mut h, "icon:compact-menu-back");
++        assert!(h.app.widgets.iter().any(|(id, _)| id == "menusub:File"));
++        click(&mut h, "compact:menu-button");
++        assert_eq!(page(&h.view.ctx), Page::Photos);
++    }
++}
++
++#[test]
++fn rotating_through_phone_sizes_preserves_the_desktop_workspace() {
++    let mut h = app([1400.0, 900.0], 1.0);
++    assert!(!h.app.widgets.iter().any(|(id, _)| id == "compact:tools"));
++    assert!(h.app.widgets.iter().any(|(id, _)| id == "panel:left_panel"));
++    let before = serde_json::to_value(&h.app.ui.docking).unwrap();
++    for size in [vec2(402.0, 874.0), vec2(874.0, 402.0), vec2(320.0, 568.0)] {
++        h.size = size;
++        step(&mut h);
++        assert!(h.app.widgets.iter().any(|(id, _)| id == "compact:tools"));
++        assert_eq!(serde_json::to_value(&h.app.ui.docking).unwrap(), before);
++    }
++    h.size = vec2(1400.0, 900.0);
++    step(&mut h);
++    assert_eq!(serde_json::to_value(&h.app.ui.docking).unwrap(), before);
++    assert!(h.app.widgets.iter().any(|(id, _)| id == "panel:left_panel"));
++    assert!(!h.app.widgets.iter().any(|(id, _)| id == "compact:tools"));
++}
++
++#[test]
++fn compact_editing_keeps_the_desktop_arrangement_and_short_filmstrip_safe() {
++    let mut app = LightcraftApp::new(lightcraft_engine::Session::with_demo(), Default::default());
++    let id = app.session.catalog.photos().next().unwrap().id;
++    app.session.execute("library.select", &json!({"ids": [id.0]})).unwrap();
++    app.ui.view = ViewMode::Detail;
++    app.ui.right = RightPanel::Edit;
++    app.ui.filmstrip = true;
++    let mut h = Headless::new(app, [1400.0, 900.0], 1.0);
++    emulate_web_host(&h.view.ctx);
++    step(&mut h);
++    let desktop = serde_json::to_value(&h.app.ui.docking).unwrap();
++    for size in [vec2(402.0, 874.0), vec2(874.0, 402.0), vec2(402.0, 350.0)] {
++        h.size = size;
++        step(&mut h);
++        for (button, panel, presets) in [
++            ("icon:compact-crop", RightPanel::Crop, false),
++            ("icon:compact-presets", RightPanel::Crop, true),
++            ("icon:compact-edit", RightPanel::Edit, false),
++        ] {
++            click(&mut h, button);
++            assert_eq!(h.app.ui.right, panel);
++            assert_eq!(h.app.ui.presets, presets);
++            assert_eq!(serde_json::to_value(&h.app.ui.docking).unwrap(), desktop);
++            let canvas = h.app.canvas_rect.unwrap();
++            assert!(canvas.is_finite() && canvas.width() > 0.0 && canvas.height() >= 60.0);
++            for (_, cell) in h.app.widgets.iter().filter(|(name, _)| name.starts_with("film:")) {
++                // The thumbnail loses 30 points inside the filmstrip cell to its name/padding.
++                assert!(cell.is_finite() && cell.width() >= 20.0 && cell.height() >= 30.0);
++            }
++            if size.y <= 402.0 {
++                assert!(!h.app.widgets.iter().any(|(name, _)| name == "filmstrip"));
++            }
++        }
++    }
++    h.app.run("dialog.export", json!({})).unwrap();
++    step(&mut h);
++    let screen = Rect::from_min_size(egui::Pos2::ZERO, h.size);
++    assert!(screen.contains_rect(rect(&h, "dialog:window")));
++    h.app.ui.dialog = None;
++    h.size = vec2(1400.0, 900.0);
++    step(&mut h);
++    assert_eq!(serde_json::to_value(&h.app.ui.docking).unwrap(), desktop);
++}
++
++#[test]
++fn compact_dialog_windows_fit_portrait_landscape_and_keyboard_height() {
++    for size in [[320.0, 568.0], [402.0, 874.0], [874.0, 402.0], [402.0, 350.0]] {
++        let mut h = app(size, 1.0);
++        for dialog in [Dialog::About, Dialog::Settings { tab: "interface".into() }] {
++            h.app.ui.dialog = Some(dialog);
++            step(&mut h);
++            let window = rect(&h, "dialog:window");
++            let screen = Rect::from_min_size(egui::Pos2::ZERO, vec2(size[0], size[1]));
++            assert!(screen.contains_rect(window), "{size:?}: {window:?}");
++            h.app.ui.dialog = None;
++            step(&mut h);
++        }
++    }
++}
++
++#[cfg(not(target_arch = "wasm32"))]
++#[test]
++fn narrow_native_windows_keep_the_desktop_ui_until_the_web_host_is_requested() {
++    let app = LightcraftApp::new(lightcraft_engine::Session::new(), Default::default());
++    let mut h = Headless::new(app, [402.0, 874.0], 1.0);
++    step(&mut h);
++    assert!(!active(&h.view.ctx));
++    assert!(h.app.widgets.iter().any(|(id, _)| id == "field:search"));
++    assert!(!h.app.widgets.iter().any(|(id, _)| id == "compact:menu-button"));
++    emulate_web_host(&h.view.ctx);
++    step(&mut h);
++    assert!(active(&h.view.ctx));
++    assert!(h.app.widgets.iter().any(|(id, _)| id == "compact:menu-button"));
++}
+diff --git a/crates/ui-egui/src/panels/detail.rs b/crates/ui-egui/src/panels/detail.rs
+index 2a6a83f..8ec42d3 100644
+--- a/crates/ui-egui/src/panels/detail.rs
++++ b/crates/ui-egui/src/panels/detail.rs
+@@ -1,3 +1,4 @@
++// Modified for the unofficial iPhone layout trial (2026-11-16).
+ //! The Detail (loupe) view: the developed photo, before/after, zoom & pan, the filmstrip, and the
+ //! on-canvas tools (crop, brush/gradient masks, remove spots, white-balance picker).
+ 
+@@ -135,6 +136,19 @@ pub enum Gesture {
+     },
+ }
+ 
++fn filmstrip_height(app: &LightcraftApp, ui: &egui::Ui, default_height: f32) -> f32 {
++    if !app.ui.filmstrip || app.ui.fullscreen {
++        return 0.0;
++    }
++    if !super::compact::active(ui.ctx()) {
++        return default_height;
++    }
++    // Filmstrip cells need 46 points for padding and labels before their image. Hide
++    // the strip in a short viewport instead of giving its thumbnails negative heights.
++    let height = default_height.min(ui.max_rect().height() * 0.25);
++    if height >= 64.0 { height } else { 0.0 }
++}
++
+ /// Draw the Develop loupe: the optional filmstrip, the fitted or zoomed photo (before/after and
+ /// full-screen aware), crop overlays and the render requests for the current view, or, when no
+ /// photo is active, the empty-library message if the library is empty and "No photo selected"
+@@ -143,11 +157,10 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+     let t = Tokens::get(ui.ctx());
+     let full = ui.max_rect();
+     let fullscreen = app.ui.fullscreen;
+-    let show_film = app.ui.filmstrip && !fullscreen;
+-    let film_h = if show_film { t.film_h } else { 0.0 };
++    let film_h = filmstrip_height(app, ui, t.film_h);
+     let canvas = Rect::from_min_max(full.min, pos2(full.right(), full.bottom() - film_h));
+     app.canvas_rect = Some(canvas);
+-    if show_film {
++    if film_h > 0.0 {
+         filmstrip(app, ui, Rect::from_min_max(pos2(full.left(), canvas.bottom()), full.max));
+     }
+     let Some(id) = app.session.active() else {
+diff --git a/crates/ui-egui/src/panels/right.rs b/crates/ui-egui/src/panels/right.rs
+index b28445d..51ff844 100644
+--- a/crates/ui-egui/src/panels/right.rs
++++ b/crates/ui-egui/src/panels/right.rs
+@@ -1,3 +1,4 @@
++// Modified for the unofficial iPhone layout trial (2026-11-16).
+ //! The right-hand panel next to the tool strip: Edit, Crop, Remove, Masking, Red Eye, Info,
+ //! Keywords, Versions, Activity.
+ 
+@@ -60,11 +61,15 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+             return;
+         };
+         // the Edit panel's histogram stays above its sliders as they scroll (#2679)
+-        if app.ui.right == RightPanel::Edit && app.ui.histogram {
++        let compact = super::compact::active(ui.ctx());
++        if app.ui.right == RightPanel::Edit && app.ui.histogram && !compact {
+             ui.spacing_mut().item_spacing.y = 0.0;
+             super::edit::histogram(app, ui, id);
+         }
+         let mut area = egui::ScrollArea::vertical().id_salt("right-scroll").auto_shrink([false, false]);
++        if compact {
++            area = area.min_scrolled_height(0.0);
++        }
+         if let Some(offset) = held {
+             area = area.vertical_scroll_offset(offset);
+         }
+@@ -79,6 +84,10 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+         });
+         let scrolled = area.show(ui, |ui| {
+             ui.spacing_mut().item_spacing.y = 0.0;
++            // A short phone tool sheet must be able to scroll past the histogram to its sliders.
++            if compact && app.ui.right == RightPanel::Edit && app.ui.histogram {
++                super::edit::histogram(app, ui, id);
++            }
+             match app.ui.right {
+                 RightPanel::Edit => super::edit::show(app, ui, id),
+                 RightPanel::Profiles => super::profiles::show(app, ui, id),
+diff --git a/crates/ui-egui/src/panels/topbar.rs b/crates/ui-egui/src/panels/topbar.rs
+index 407fc5f..cbb1fa9 100644
+--- a/crates/ui-egui/src/panels/topbar.rs
++++ b/crates/ui-egui/src/panels/topbar.rs
+@@ -1,3 +1,4 @@
++// Modified for the unofficial iPhone layout trial (2026-11-16).
+ //! The top bar: sidebar toggle, back/forward, search, filter, and the right-hand icons.
+ 
+ use egui::{Align2, Rect, Sense, Stroke, StrokeKind, pos2, vec2};
+@@ -92,6 +93,13 @@ fn nav_buttons(app: &mut LightcraftApp, ui: &mut egui::Ui, search_left: f32) {
+     });
+ }
+ 
++/// The centred search field with its placeholder and focus ring.
++pub(super) fn compact_search(app: &mut LightcraftApp, ui: &mut egui::Ui) {
++    let t = Tokens::get(ui.ctx());
++    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::hover());
++    search_field(app, ui, &t, row.shrink2(vec2(8.0, 6.0)));
++}
++
+ /// The centred search field with its placeholder and focus ring.
+ fn search_field(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, sr: Rect) {
+     // search field (centred on the window)
+diff --git a/crates/ui-egui/src/render.rs b/crates/ui-egui/src/render.rs
+index e8c3a90..b2c0519 100644
+--- a/crates/ui-egui/src/render.rs
++++ b/crates/ui-egui/src/render.rs
+@@ -1,3 +1,4 @@
++// Modified for the unofficial iPhone trial (2026-11-16): equivalent Rust 1.100 lint cleanup.
+ //! Background rendering: engine [`RenderJob`]s run on a [`JobPool`]; results become textures.
+ //!
+ //! Each visible thing that needs pixels is a *slot* (a grid thumbnail, the loupe, the "before"
+@@ -658,10 +659,7 @@ impl Renderer {
+         if let Some(&(k, p)) = self.pending.get(&slot) {
+             return k != key || (p != priority && self.is_queued(slot));
+         }
+-        if self.textures.get(&slot).is_some_and(|t| t.key == key) || self.failed.get(&slot).is_some_and(|f| f.0 == key && f.2 == self.catalog_rev) {
+-            return false;
+-        }
+-        true
++        !(self.textures.get(&slot).is_some_and(|t| t.key == key) || self.failed.get(&slot).is_some_and(|f| f.0 == key && f.2 == self.catalog_rev))
+     }
+     /// Free a view slot's texture and stage cache (the view is no longer shown).
+     pub fn release(&mut self, slot: Slot) {
