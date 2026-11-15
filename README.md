@@ -1,90 +1,94 @@
 # LightCraft iPhone試験配信
 
-公式LightCraft v0.21.1のWeb配布物を改変せずにGitHub Pagesで配信するための小さなリポジトリです。LightCraft自体のソースフォークではありません。
+[LightCraft v0.21.1](https://github.com/storytold/lightcraft/releases/tag/v0.21.1)を基にしたiPhone向けレイアウト修正版と、無改変の公式Web配布物をGitHub Pagesで配信するリポジトリです。開発元による運営・承認・サポートを示すものではありません。
 
-予定URL: **https://lightcraft.aun-graphic.jp/v0.21.1/?workers=1**
+- iPhone向け修正版の公開先: **https://lightcraft.aun-graphic.jp/iphone-r1/?workers=1**
+- 無改変の公式版: https://lightcraft.aun-graphic.jp/v0.21.1/?workers=1
 
-公開設定・DNS・証明書が完了するまでは、このURLの利用可能性を保証しません。
+修正版は、完全な品質ゲート・成果物レビュー・手動公開を終えるまで利用可能とは扱いません。同じオリジンに置くため、ブラウザ内のライブラリは両版で共有されます。切り替え前にバックアップし、同時に2つのタブで開かないでください。
 
 ## 動作と保存先
 
-GitHub Pagesはアプリを配信します。写真処理はiPhoneのCPUで実行され、写真とカタログはブラウザのOPFSまたはIndexedDBに保存されます。写真のサーバーアップロード、アカウント、端末間同期は追加しません。
+サーバーはアプリを配信します。写真処理はiPhone側で行い、写真とカタログはブラウザのOPFSまたはIndexedDBに保存します。写真アップロードサービスやアカウント、端末間の自動同期は追加しません。
 
-Safari対応・RAW現像の実用性は実機検証が必要です。アプリが起動したこととRAWが実用的に現像できたことは別々に記録します。原本は別に保持し、File → Back Up Library…でバックアップしてください。通常タブを1つ使用し、少数枚で試験します。バックアップの公式上限は4GBです。
+原本は別に保持し、File → Back Up Library…でバックアップしてください。ブラウザのサイトデータ削除や容量整理により消える場合があります。少数枚・通常タブ1つで試験します。公式バックアップ上限は4GBです。
 
-## 固定する配布物
+## ビルド入力の固定
 
-- [公式v0.21.1リリース](https://github.com/storytold/lightcraft/releases/tag/v0.21.1)
-- ファイル: `lightcraft-web-0.21.1.zip`
-- バイト数: `74569049`
+| 入力 | 固定値 |
+|---|---|
+| LightCraftソース | `361e3bc0c838ffe5e5cea515b1fe5b71951989c6`（v0.21.1） |
+| ローカル変更 | `patches/iphone-layout.patch` |
+| craft-fonts | `b076417b5880bd4154bd22f00695b1d28c6bea83`（公式v0.21.1と同じ） |
+| Rust | `1.100.0` |
+| wasm-bindgen CLI | ソースのCargo.lockから取得する完全一致版（現在`0.2.129`） |
+| 実行場所 | GitHubの標準`ubuntu-24.04`ランナー |
+
+上流の共有リリースワークフローは`stable`を指定します。本リポジトリでは[2026-11-12公開のRust 1.100.0](https://blog.rust-lang.org/2026/11/12/Rust-1.100.0/)へ固定します。日本語BIZ UDPGothicを含むフォントを`CRAFT_FONTS_REQUIRED=1`で必須とし、フォントのないビルドへ自動的に切り替えません。公式配布WASMは修正版に流用せず、パッチを適用したソースから新しいWASMを作ります。
+
+無改変の公式版は次の配布ZIPから毎回作り、サイズとSHA-256を確認します。
+
+- `lightcraft-web-0.21.1.zip`: `74569049` bytes
 - SHA-256: `57147383a46eaab3b0cc036acf9443b221450c6a19f5dc303ae165bb9678b8cb`
-- ソースコミット: `361e3bc0c838ffe5e5cea515b1fe5b71951989c6`
 
-`scripts/build_site.py`はサイズ・SHA-256を検証した後、ZIP内の全ファイルを`_site/v0.21.1/`へ展開します。アプリ本体・フォント・ライセンス・NOTICEの内容は変更しません。パストラバーサル、リンク、重複エントリー、想定外の展開量を拒否します。各アプリファイルのサイズとSHA-256は`_site/deployment.json`に記録します。写真、秘密情報、ローカルのカタログを公開物へ収集する処理はありません。
+## 修正版の作成と公開
 
-## GitHub Pagesへの手動公開
+1. `codex/`ブランチからPRを作ります。**Build and test iPhone candidate**はPRまたは手動で実行され、公開権限を持ちません。
+2. 固定ソース・フォントを取得してパッチを適用し、Python梱包試験と、実際のWebページ内モジュールを使うNode viewport試験を実行します。
+3. **`cargo xtask ci`を省略せず実行**します。fmt・clippy・HEIF・tests・parity・layers・assets・roots・WASMの全段階成功を要求し、`--quick`の結果では公開できません。実行は1ランナーで順番に進め、ゲートの内部期限は80分、ジョブ全体は150分です。GPUやコーパス等の試験スキップは報告書へ残し、実機合格と同一視しません。
+4. 成功後、`cargo xtask web`と公式の梱包スクリプトで修正版を作ります。`scripts/build_site.py`が無改変`/v0.21.1/`と修正版`/iphone-r1/`をまとめます。
+5. **`iphone-r1-candidate`**（14日保持）を取得してレビューします。全ファイルのSHA-256を含む`candidate.json`、修正版の`build-provenance.json`、適用パッチ、ライセンスを同梱します。成功／失敗時とも**`iphone-r1-gate-evidence`**へゲート報告書とログを保存します。
+6. レビューした内容をPR経由で`main`に統合します。候補のソースツリーと`main`のツリーが一致していることが必要です。レビュー後に内容を変更した場合は新しい候補が必要です。
+7. `main`で **Publish reviewed iPhone candidate → Run workflow**を手動実行し、成功した候補の`candidate_run_id`と`candidate.json`内の`build.source_commit`（40桁）を指定します。
+8. 公開ジョブは、指定実行がこのリポジトリの成功した候補ビルドであること、ソースとパッチがレビュー済み`main`と一致すること、成果物全ファイルのサイズとハッシュを検証します。再ビルドせず、その成果物をPagesへ公開します。
 
-1. このディレクトリの内容だけを公開リポジトリ`lightcraft-iphone-trial`に配置します。アプリZIP・写真・ローカル作業記録はコミットしません。
-2. リポジトリの **Settings → Pages → Build and deployment → Source** を **GitHub Actions** に設定します。
-3. **Custom domain** に`lightcraft.aun-graphic.jp`を指定します。DNS側ではこのサブドメインだけをリポジトリ所有者の`<owner>.github.io`へCNAME設定します。既存のルートドメイン・www・メール設定は変更しません。
-4. DNSが確認され証明書が発行されたら **Enforce HTTPS** を有効にします。GitHub Actions方式では`CNAME`ファイルを置くだけでは独自ドメイン設定になりません。
-5. **Actions → Deploy pinned LightCraft → Run workflow** を手動実行します。`github-pages`環境は公開元ブランチだけに制限します。
-6. 成功後、HTTPSの入口、`v0.21.1/index.html`、JS、WASM、Worker、フォントの応答を確認します。WASMは`Content-Type: application/wasm`であることを確認します。
+以前の「公式版だけを再公開する」ワークフローは置き換えました。通常操作で`/iphone-r1/`を消してしまう再公開経路は残しません。旧版への操作上の切り替えは、保持した`/v0.21.1/`を開きます。自動の本番公開・スケジュール更新・最新版追従はありません。公開された`iphone-r1`の内容を後で変更する場合は、別のリビジョン用パスを新しい作業として用意します。
 
-ワークフローは手動実行だけです。push・スケジュール・最新リリース追従はありません。各Actionは2026-11-15に公式リポジトリのタグから確認したコミットSHAに固定しています。
+## GitHub Pagesと独自ドメイン
 
-GitHub Pagesでは同梱の`_headers`と`.htaccess`は適用されません。代わりにアプリのパスを`/v0.21.1/`へ固定し、同じパスの内容を更新しないことで旧JSと新WASMの混在を避けます。独自ドメイン移行は保存領域のオリジンが変わるため、写真を取り込む前に公開URLを確定します。将来の更新はバックアップ後の別作業です。
+- Settings → Pages → Sourceは**GitHub Actions**。
+- Custom domainは`lightcraft.aun-graphic.jp`、このサブドメインのCNAMEだけを`aungra.github.io`へ設定。
+- **Enforce HTTPS**を有効にし、`github-pages`環境からの公開を`main`だけに制限。
+- 既存のルートドメイン・www・メール設定は変更しません。Actions方式では`CNAME`ファイルだけでは独自ドメイン設定になりません。
+- Pagesでは同梱の`_headers`・`.htaccess`は使われません。版ごとのパスと固定された成果物で、旧JSと新WASMが混ざる更新を避けます。
 
-## ローカルで配布物を準備する場合
+公開後はHTTPS、HTML・JS・WASM・Worker・フォント・ライセンスの応答とファイルハッシュを確認します。WASMのMIME形式は`application/wasm`が必要です。
 
-Python 3.11以降、標準ライブラリだけを使います。独自のRustビルドは不要です。
+## ローカルで行う軽い確認
+
+Python梱包試験にはPython 3.11以降の標準ライブラリを使用します。Macで重いRustビルドをする必要はありません。
 
 ```sh
 python3 -m unittest discover -s tests -v
-python3 scripts/build_site.py
-python3 -m http.server 8765 --bind 127.0.0.1 --directory _site
+node tests/test_viewport.mjs /path/to/patched-source/apps/lightcraft-web/index.html
 ```
 
-`http://localhost:8765/`で確認します。`file://`では動作しません。出力先が存在する場合は上書きせず停止するため、再検証は`--output /absolute/new/output`で新しい出力先を指定します。既存ZIPを使う場合は`--archive /absolute/path/lightcraft-web-0.21.1.zip`を指定できますが、同じ固定ハッシュで必ず検証します。
+公式版だけを新しいローカル出力先に用意する場合は`python3 scripts/build_site.py --output /absolute/new/output`を使えます。公開操作にはなりません。出力先が既存なら上書きを拒否します。ZIP・生成サイト・ユーザーの写真・検証結果はコミットしません。
 
-生成される`_site`は一般のHTTPS静的ホストへもそのまま配置できます。約35MiBのWASMを配信でき、正しいMIME形式を返せるホストが必要です。
+## iPhone実機での受入確認
 
-## iPhone 16 Pro／iOS 26での受入確認
+対象はiPhone 16 Pro／iOS 26。最初はRICOH GR IIIxのDNGコピーを1枚ずつ使い、JPEGでの結果とも区別します。Nikon NEFは機種・ビット深度・圧縮形式を記録して別判定します。
 
-最初はRICOH GR IIIxのDNGコピーを1枚ずつ使います。Nikon NEFはカメラ型番・ビット深度・圧縮方式を記録し、形式ごとに別判定します。GR IIIx HDF、すべてのNEF、Apple ProRAWへ結果を一般化しません。
-
-| 確認 | 合格条件／記録する内容 |
+| 項目 | 確認内容 |
 |---|---|
-| 起動 | Safari通常タブで画面が表示され、起動秒数・iOS詳細版を記録 |
-| 取込み | 「ファイル」から元のDNGを選択し、ファイル名・サイズ・画素数を確認 |
-| 現像 | 露出・ホワイトバランス・トリミングが反映され、待ち時間を記録 |
-| 書出し | 原寸JPEGをダウンロードし、画素数・色・編集反映・書出し秒数を確認 |
-| 再開 |保存完了後にSafariを閉じて開き直し、写真・編集が保持される |
-| 退避 | Back Up Library…から別の場所へ保存し、Restore Library from Backup…で復元できる |
-| 操作性 | 縦／横画面の操作不能、異常終了、自動再読込み、保存警告の有無を記録 |
+| 縦画面 | メニューが画面内に開き、編集パネルを最後まで操作できる |
+| Safariの表示領域 | アドレスバー表示／収納、回転、キーボード表示で重要操作が隠れない |
+| 現像 | 露出・ホワイトバランス・トリミングが反映される |
+| 書出し | 原寸JPEGの画素数・色・編集結果と所要時間を確認 |
+| 再開 | 保存完了後、Safariを閉じて開いて写真・編集内容を保持 |
+| バックアップ | Back Up Library…とRestore Library from Backup…で退避・復元 |
+| 安定性 | 操作不能、クラッシュ、勝手な再読込み、保存警告を記録 |
 
-実機結果はローカルの`results/`等へ保存し、個人のファイル名・画像・撮影位置をこの公開リポジトリにコミットしません。
+iPhone実機結果は公開リポジトリとは別の検証記録に残します。CIの成功はiPhone実機での合格を意味しません。
 
-### RAW本体と埋め込みJPEGを区別する
+### RAW本体と埋め込みプレビュー
 
-Editパネルのプレビュー代替警告を確認します。ブラウザ開発者ツールを使える場合、同じページで次を確認できます。
+Editパネルのプレビュー代替警告を確認します。ブラウザ内の`JSON.parse(await lightcraft.command("catalog.query", "{}"))`で写真の`previewOnly`も確認できます。文字列なら代替理由、`null`ならカタログ上は代替なしです。ただし実ローダーで後から代替する経路があり、`null`だけではRAW本体の使用を証明できません。未確認のRAW判定は保留し、表示・操作・書出しの結果と区別します。
 
-```js
-JSON.parse(await lightcraft.command("catalog.query", "{}"))
-```
-
-各写真の`previewOnly`が文字列ならプレビュー代替理由です。`null`はカタログ上で代替なしを示しますが、実ロード時の後段フォールバックを完全には否定できません。公式ZIPの公開コマンドでは実ローダーの`SourceInfo.raw`を直接観測する経路は確認できていません。RAW本体の使用を確認できない場合、RAW対応の判定は保留し、「読込み・現像操作・原寸書出し、警告なし」までを区別して記録します。
-
-問題は元の試験プロジェクトの`feature-backlog.json`へ、対象版・形式・再現手順・期待結果・受入条件を添えて記録します。原因未確定のまま写真の原本を書き換えたり、Safariの保存データを消したりしません。
+問題は元の試験プロジェクトの`feature-backlog.json`に対象版・形式・再現条件・期待結果・受入条件を記録します。原因未確定のまま原本やブラウザ内保存データを消しません。
 
 ## 出典と権利表示
 
-- [公式ホスティング手順](https://github.com/storytold/lightcraft/blob/v0.21.1/packaging/web/README.md)
-- [Web版の仕様と制限](https://github.com/storytold/lightcraft/blob/v0.21.1/docs/web.md)
-- [RAW検証記録](https://github.com/storytold/lightcraft/blob/v0.21.1/docs/raw/coverage.tsv)
-- [RAW状態の照会実装](https://github.com/storytold/lightcraft/blob/v0.21.1/crates/engine/src/cmd/query.rs)
-- [実ロードのフォールバック実装](https://github.com/storytold/lightcraft/blob/v0.21.1/crates/engine/src/files/load.rs)
-- [MIT](https://github.com/storytold/lightcraft/blob/v0.21.1/LICENSE-MIT)／[Apache-2.0](https://github.com/storytold/lightcraft/blob/v0.21.1/LICENSE-APACHE)／[NOTICE](https://github.com/storytold/lightcraft/blob/v0.21.1/NOTICE)
-- [ブランド条件](https://github.com/storytold/lightcraft/blob/v0.21.1/docs/brand/LICENSE-brand.txt)
+[公式ホスティング手順](https://github.com/storytold/lightcraft/blob/v0.21.1/packaging/web/README.md)、[Web版仕様](https://github.com/storytold/lightcraft/blob/v0.21.1/docs/web.md)、[RAW検証](https://github.com/storytold/lightcraft/blob/v0.21.1/docs/raw/coverage.tsv)、[ブランド条件](https://github.com/storytold/lightcraft/blob/v0.21.1/docs/brand/LICENSE-brand.txt)。
 
-LightCraftの権利は開発元および各権利者に帰属します。本サイトは非公式の個人試験配信で、開発元の運営・承認・サポートを示しません。アプリ内の表示・配布物のライセンスは保持し、入口ページに開発元のロゴは追加しません。
+修正版はLightCraftを基にした非公式ビルドと明示し、ArtCraftのブランドマークを除去します。MIT／Apache-2.0、NOTICEと各フォントのライセンスは保持します。無改変の公式版は独立したパスにそのまま保持します。

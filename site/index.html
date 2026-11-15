@@ -2,12 +2,12 @@
 <html lang="ja">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex,nofollow">
   <title>LightCraft — iPhone試験用</title>
   <style>
     :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif; }
-    body { max-width: 42rem; margin: 0 auto; padding: 3rem 1.3rem; line-height: 1.8; }
+    body { max-width: 42rem; margin: 0 auto; padding: max(2rem, env(safe-area-inset-top)) max(1.3rem, env(safe-area-inset-right)) max(2rem, env(safe-area-inset-bottom)) max(1.3rem, env(safe-area-inset-left)); line-height: 1.8; overflow-wrap: anywhere; }
     h1 { font-size: 1.9rem; line-height: 1.4; }
     .open { display: inline-block; padding: .8rem 1.3rem; border-radius: .65rem; background: #285c39; color: white; font-weight: 700; text-decoration: none; }
     a { color: #367c4e; text-underline-offset: .2em; }
@@ -19,14 +19,15 @@
   <main>
     <p>iPhone 16 Pro・Safariでの試験用</p>
     <h1>LightCraftで写真を現像</h1>
-    <p>まずはRICOH GR IIIxのDNGコピーを1枚、読み込んで試してください。</p>
-    <p><a class="open" href="v0.21.1/?workers=1">LightCraftを開く</a></p>
+    <p>iPhone向けの配置に調整した試験版です。最初はJPEGのコピー1枚で操作を確認してください。</p>
+    <p><a class="open" href="iphone-r1/?workers=1">LightCraftを開く</a></p>
     <p>写真と編集内容は、この端末のブラウザ内に保存されます。写真をこのサイトへアップロードする機能や、端末間の自動同期はありません。</p>
-    <p>原本は別に残し、作業後は <strong>File → Back Up Library…</strong> からバックアップしてください。サイトデータの削除などで、ブラウザ内の写真と編集内容が失われることがあります。</p>
-    <p>SafariでのRAW現像は検証中です。初回はWi-Fiで開き、通常のタブを1つ使ってください。</p>
+    <p>原本は別に残し、作業後は <strong>メニュー → ファイル → ライブラリをバックアップ…</strong> からバックアップしてください。サイトデータの削除などで、ブラウザ内の写真と編集内容が失われることがあります。</p>
+    <p>JPEG編集はiPhoneで動作報告があります。修正版の実機確認とRAW現像は検証中です。初回はWi-Fiで開き、通常のタブを1つ使ってください。</p>
   </main>
   <footer>
-    <p>LightCraft v0.21.1の公式Web配布物をそのまま配信する、非公式の個人試験サイトです。開発元による運営・サポートを示すものではありません。</p>
+    <p><a href="v0.21.1/?workers=1">変更していない公式配布版</a> · <a href="https://github.com/aungra/lightcraft-iphone-trial">修正内容と検証記録</a></p>
+    <p>LightCraft v0.21.1を基にiPhone向けの表示を修正した、非公式の個人試験版です。開発元による運営・承認・サポートを示すものではありません。</p>
     <p><a href="https://github.com/storytold/lightcraft/releases/tag/v0.21.1">公式リリース</a> · <a href="v0.21.1/NOTICE">著作権・第三者表示</a> · <a href="v0.21.1/LICENSE-MIT">MIT</a> · <a href="v0.21.1/LICENSE-APACHE">Apache-2.0</a></p>
   </footer>
 </body>

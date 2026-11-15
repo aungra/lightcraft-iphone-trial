@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package the unmodified, hash-pinned official LightCraft web release."""
+"""Keep the official release intact, optionally adding a tested iPhone build."""
 
 import argparse
 import hashlib
@@ -30,6 +30,9 @@ REQUIRED_FILES = {
     "LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "HOSTING.md",
 }
 REPO_ROOT = Path(__file__).resolve().parent.parent
+IPHONE_ID = "iphone-r1"
+FONTS_COMMIT = "b076417b5880bd4154bd22f00695b1d28c6bea83"
+RUST_VERSION = "1.100.0"
 
 
 def sha256(path):
@@ -75,7 +78,7 @@ def get_archive(cache):
     return archive
 
 
-def checked_members(archive):
+def checked_members(archive, expected_root=ARCHIVE_ROOT):
     """Validate the whole ZIP before extraction; never follow links or escape its root."""
     entries = archive.infolist()
     if len(entries) > MAX_ENTRIES or sum(item.file_size for item in entries) > MAX_UNPACKED_BYTES:
@@ -86,7 +89,7 @@ def checked_members(archive):
         name = item.filename
         path = PurePosixPath(name)
         if ("\\" in name or path.is_absolute() or ".." in path.parts
-                or not path.parts or path.parts[0] != ARCHIVE_ROOT):
+                or not path.parts or path.parts[0] != expected_root):
             raise ValueError(f"Unsafe archive path: {name!r}")
         mode = item.external_attr >> 16
         kind = stat.S_IFMT(mode)
@@ -105,7 +108,81 @@ def checked_members(archive):
     return members
 
 
-def build_site(archive_path, destination):
+def unpack(archive_path, destination, expected_root):
+    destination.mkdir(parents=True)
+    with zipfile.ZipFile(archive_path) as archive:
+        for item, relative in checked_members(archive, expected_root):
+            target = destination / relative
+            if item.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(item) as source, target.open("xb") as output:
+                    shutil.copyfileobj(source, output, 1024 * 1024)
+    missing = sorted(name for name in REQUIRED_FILES if not (destination / name).is_file())
+    if missing:
+        raise ValueError(f"Required application/license files missing: {missing}")
+    if not list(destination.glob("OFL-*.txt")):
+        raise ValueError("Font license files missing.")
+
+
+def file_manifest(directory):
+    files = {}
+    for path in sorted(directory.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"Symlinks are not allowed in a published site: {path}")
+        if path.is_file():
+            files[path.relative_to(directory).as_posix()] = {"bytes": path.stat().st_size, "sha256": sha256(path)}
+    return files
+
+
+def add_iphone_build(stage, archive, proof_path):
+    proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    required = {
+        "id": IPHONE_ID, "upstream_commit": SOURCE_COMMIT,
+        "fonts_commit": FONTS_COMMIT, "rust_version": RUST_VERSION,
+        "full_gate_passed": True, "modified_build": True,
+    }
+    for key, expected in required.items():
+        if proof.get(key) != expected:
+            raise ValueError(f"Candidate provenance mismatch: {key}")
+    if proof.get("archive_sha256") != sha256(archive):
+        raise ValueError("Candidate archive SHA-256 mismatch.")
+    patch = REPO_ROOT / "patches" / "iphone-layout.patch"
+    if proof.get("patch_sha256") != sha256(patch):
+        raise ValueError("Candidate patch SHA-256 mismatch.")
+    app = stage / IPHONE_ID
+    unpack(archive, app, f"lightcraft-web-{VERSION}-{IPHONE_ID}")
+    shutil.copyfile(patch, app / "iphone-layout.patch")
+    # Upstream README includes official brand artwork and product claims. The fork
+    # gets its own plain-text introduction; the official version remains untouched.
+    (app / "README.md").write_text(
+        "# Unofficial iPhone layout trial\n\n"
+        f"Revision: {IPHONE_ID}, based on LightCraft v{VERSION}.\n\n"
+        "This is an unofficial modified build, not an official ArtCraft product.\n"
+        "LightCraft is made by the ArtCraft Team and its contributors; this trial is not\n"
+        "made, endorsed, certified or supported by that team.\n\n"
+        "Changes: compact portrait menus and editing panels, Safari visible-viewport\n"
+        "handling, and a browser-compatible timing fix in the image loader.\n"
+        "See iphone-layout.patch, MODIFICATIONS.txt and build-provenance.json for the\n"
+        "exact changes and pinned inputs. iPhone runtime acceptance is separate from CI.\n\n"
+        "Upstream source: https://github.com/storytold/lightcraft/tree/v0.21.1\n"
+        "Upstream web documentation: https://github.com/storytold/lightcraft/blob/v0.21.1/docs/web.md\n\n"
+        "LICENSE-MIT, LICENSE-APACHE, NOTICE and the bundled OFL font licenses are retained.\n"
+        "Keep original photos and use File > Back Up Library before changing versions.\n",
+        encoding="utf-8",
+    )
+    (app / "MODIFICATIONS.txt").write_text(
+        "Unofficial modified build based on LightCraft v0.21.1.\n"
+        "iPhone portrait layout and browser image-loader timing changes; see iphone-layout.patch and build-provenance.json.\n"
+        "This build is not made, endorsed or supported by the ArtCraft Team.\n",
+        encoding="utf-8",
+    )
+    (app / "build-provenance.json").write_text(json.dumps(proof, indent=2) + "\n", encoding="utf-8")
+    return proof
+
+
+def build_site(archive_path, destination, patched_archive=None, provenance=None):
     if destination.exists() or destination.is_symlink():
         raise FileExistsError(f"Refusing to overwrite existing output: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -113,22 +190,16 @@ def build_site(archive_path, destination):
     with tempfile.TemporaryDirectory(prefix=".lightcraft-build-", dir=destination.parent) as staging:
         stage = Path(staging) / "site"
         app = stage / f"v{VERSION}"
-        app.mkdir(parents=True)
-        with zipfile.ZipFile(archive_path) as archive:
-            for item, relative in checked_members(archive):
-                target = app / relative
-                if item.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with archive.open(item) as source, target.open("xb") as output:
-                        shutil.copyfileobj(source, output, 1024 * 1024)
-        missing = sorted(name for name in REQUIRED_FILES if not (app / name).is_file())
-        if missing:
-            raise ValueError(f"Required application/license files missing: {missing}")
-        if not list(app.glob("OFL-*.txt")):
-            raise ValueError("Font license files missing.")
-        shutil.copyfile(REPO_ROOT / "site" / "index.html", stage / "index.html")
+        unpack(archive_path, app, ARCHIVE_ROOT)
+        for relative in file_manifest(REPO_ROOT / "site"):
+            source = REPO_ROOT / "site" / relative
+            if source.suffix not in {".html", ".css", ".js", ".txt"}:
+                raise ValueError(f"Unexpected landing-page file type: {relative}")
+            target = stage / relative
+            if target.exists():
+                raise ValueError(f"Landing files must not replace application files: {relative}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
         (stage / ".nojekyll").touch()
         manifest = {
             "version": VERSION,
@@ -138,12 +209,13 @@ def build_site(archive_path, destination):
             "archive_bytes": ARCHIVE_BYTES,
             "app_files_unmodified": True,
             "suggested_entry_url": PUBLIC_URL,
-            "files": {
-                path.relative_to(app).as_posix(): {"bytes": path.stat().st_size, "sha256": sha256(path)}
-                for path in sorted(app.rglob("*")) if path.is_file()
-            },
+            "files": file_manifest(app),
         }
         (stage / "deployment.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        if patched_archive:
+            proof = add_iphone_build(stage, patched_archive, provenance)
+            candidate = {"build": proof, "files": file_manifest(stage)}
+            (stage / "candidate.json").write_text(json.dumps(candidate, indent=2) + "\n", encoding="utf-8")
         stage.rename(destination)
     print(f"Verified official v{VERSION}; site ready: {destination}")
 
@@ -152,13 +224,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path, help="Use an already-downloaded ZIP; exact official hash is still mandatory.")
     parser.add_argument("--output", type=Path, default=REPO_ROOT / "_site", help="New output directory; existing output is never overwritten.")
+    parser.add_argument("--patched-archive", type=Path, help="Freshly built iPhone package, alongside the preserved official release.")
+    parser.add_argument("--provenance", type=Path, help="Successful full-gate/build provenance for --patched-archive.")
     args = parser.parse_args()
+    if bool(args.patched_archive) != bool(args.provenance):
+        parser.error("--patched-archive and --provenance must be supplied together.")
     destination = args.output.absolute()
     if destination.exists() or destination.is_symlink():
         parser.error(f"Output already exists: {destination}; use a fresh --output directory.")
     try:
         archive = args.archive or get_archive(REPO_ROOT / ".cache")
-        build_site(archive, destination)
+        build_site(archive, destination, args.patched_archive, args.provenance)
     except (OSError, ValueError, zipfile.BadZipFile) as error:
         print(f"Build stopped: {error}", file=sys.stderr)
         return 1

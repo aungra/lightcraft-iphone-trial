@@ -1,0 +1,113 @@
+name: Build and test iPhone candidate
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: iphone-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      RUSTUP_TOOLCHAIN: 1.100.0
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CRAFT_FONTS_DIR: ${{ github.workspace }}/craft-fonts
+      CRAFT_FONTS_REQUIRED: 1
+    steps:
+      - name: Check out reviewed deployment source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check packaging guards
+        run: python3 -m unittest discover -s tests -v
+      - name: Check out fixed upstream source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: storytold/lightcraft
+          ref: 361e3bc0c838ffe5e5cea515b1fe5b71951989c6
+          path: upstream
+          persist-credentials: false
+      - name: Check out fixed font inputs
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: storytold/craft-fonts
+          ref: b076417b5880bd4154bd22f00695b1d28c6bea83
+          path: craft-fonts
+          persist-credentials: false
+      - name: Apply reviewed layout patch
+        run: |
+          set -euo pipefail
+          git -C upstream apply --check ../patches/iphone-layout.patch
+          git -C upstream apply ../patches/iphone-layout.patch
+          git -C upstream diff --check
+      - name: Check viewport regression tests
+        run: node tests/test_viewport.mjs upstream/apps/lightcraft-web/index.html
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev libxcursor-dev libxrandr-dev libxi-dev libfontconfig1-dev libfreetype-dev mesa-vulkan-drivers libgl1-mesa-dev libdbus-1-dev
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal --component rustfmt --component clippy --target wasm32-unknown-unknown --no-self-update
+          rustc --version
+          cargo --version
+      - name: Cache Rust dependencies
+        uses: step-security/rust-cache@8871c8ba063416da7c32246932ea6ae08700453e # v2.9.2, used by upstream release
+        with:
+          workspaces: upstream -> target
+          key: iphone-r1-rust-1.100.0-fonts-b076417b
+      - name: Check cloud runner capacity
+        run: |
+          df -h .
+          free -h
+          python3 -c 'import shutil; assert shutil.disk_usage(".").free >= 15 * 1024**3, "Insufficient runner disk space for full gate and web build"'
+      - name: Run complete upstream gate
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=30s 80m cargo xtask ci 2>&1 | tee ../full-gate.log
+      - name: Install exactly matching wasm-bindgen CLI
+        run: |
+          BINDGEN_VERSION=$(python3 -c 'import tomllib; d=tomllib.load(open("upstream/Cargo.lock", "rb")); print(next(p["version"] for p in d["package"] if p["name"] == "wasm-bindgen"))')
+          cargo install wasm-bindgen-cli --version "$BINDGEN_VERSION" --locked
+      - name: Build modified web package
+        working-directory: upstream
+        env:
+          LIGHTCRAFT_VERSION: 0.21.1-iphone-r1
+        run: |
+          set -euo pipefail
+          cargo xtask web
+          bash packaging/web/package.sh --skip-build
+      - name: Record successful build and compose candidate
+        run: |
+          python3 scripts/record_candidate.py --source upstream --fonts craft-fonts --archive upstream/dist/release/lightcraft-web-0.21.1-iphone-r1.zip --output build-provenance.json
+          python3 scripts/build_site.py --patched-archive upstream/dist/release/lightcraft-web-0.21.1-iphone-r1.zip --provenance build-provenance.json
+      - name: Upload candidate for review (no publication)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: iphone-r1-candidate
+          path: _site
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve full-gate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: iphone-r1-gate-evidence
+          path: |
+            upstream/target/ci/
+            full-gate.log
+            build-provenance.json
+          if-no-files-found: warn
+          retention-days: 14
