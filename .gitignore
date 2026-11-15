@@ -1,0 +1,7 @@
+/_site/
+/.cache/
+/.lightcraft-build-*/
+/results/
+*.zip
+__pycache__/
+.DS_Store
