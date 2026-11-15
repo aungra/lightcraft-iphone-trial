@@ -66,7 +66,7 @@ index b088ad1..a2b40fc 100644
      import init, { start, command } from "./lightcraft_web.js";
      (async () => {
 diff --git a/crates/engine/src/files/load.rs b/crates/engine/src/files/load.rs
-index 0e396dd..ba04e7d 100644
+index 0e396dd..7c34976 100644
 --- a/crates/engine/src/files/load.rs
 +++ b/crates/engine/src/files/load.rs
 @@ -1,3 +1,4 @@
@@ -84,7 +84,7 @@ index 0e396dd..ba04e7d 100644
              let n = raw.suppress_hot_pixels_with(super::hot_pixel_limit());
              if lightcraft_pipeline::profiling() {
                  eprintln!("[profile] raw outliers: {n} photosites replaced in {:.1} ms", t.elapsed().as_secs_f64() * 1e3);
-@@ -450,6 +452,33 @@ fn camera_tone_of<T>(profile: bool, look: Option<T>, curve: Option<T>, kept: Opt
+@@ -450,6 +452,34 @@ fn camera_tone_of<T>(profile: bool, look: Option<T>, curve: Option<T>, kept: Opt
      if profile { curve.or(kept).or(look) } else { look.or(curve).or(kept) }
  }
  
@@ -92,10 +92,11 @@ index 0e396dd..ba04e7d 100644
 +mod raw_outlier_tests {
 +    use super::{RawDecode, load_bytes_decoded};
 +
-+    /// Default raw rendering on the web reached an unsupported std clock before removing hot pixels.
-+    /// Exercise that path with a synthetic sensor, and keep the correction itself enabled.
++    /// A newly imported raw on the web reached an unsupported std clock before removing hot pixels.
++    /// Generic defaults keep removal off for rendered files and legacy edits; use the raw-import
++    /// settings, as the web worker does, and keep the correction itself enabled.
 +    #[test]
-+    fn default_raw_hot_pixel_removal_decodes_sensor_data() {
++    fn imported_raw_hot_pixel_removal_decodes_sensor_data() {
 +        let (w, h) = (64usize, 64usize);
 +        let clean = vec![2000; w * h];
 +        let mut hot = clean.clone();
@@ -103,8 +104,8 @@ index 0e396dd..ba04e7d 100644
 +        let dng = |data| crate::tests_xmp::synthetic_dng_of(w, h, "RGGB", data, None, Default::default());
 +        let clean_dng = dng(clean);
 +        let hot_dng = dng(hot);
-+        let outliers = lightcraft_develop::DevelopSettings::default().removes_hot_pixels();
-+        assert!(outliers, "the web's default raw decode must exercise hot pixel removal");
++        let outliers = lightcraft_develop::DevelopSettings::for_raw(6500.0, 0.0).removes_hot_pixels();
++        assert!(outliers, "a newly imported raw must exercise hot pixel removal");
 +        let (corrected, info) = load_bytes_decoded(&hot_dng, w, RawDecode { dcp: None, outliers }).unwrap();
 +        let (expected, _) = load_bytes_decoded(&clean_dng, w, RawDecode::default()).unwrap();
 +        let (uncorrected, _) = load_bytes_decoded(&hot_dng, w, RawDecode::default()).unwrap();

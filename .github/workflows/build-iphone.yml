@@ -14,7 +14,7 @@ concurrency:
 jobs:
   candidate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 180
     env:
       RUSTUP_TOOLCHAIN: 1.100.0
       CARGO_BUILD_JOBS: 2
@@ -72,11 +72,19 @@ jobs:
           df -h .
           free -h
           python3 -c 'import shutil; assert shutil.disk_usage(".").free >= 15 * 1024**3, "Insufficient runner disk space for full gate and web build"'
+      - name: Check RAW regression before the complete gate
+        working-directory: upstream
+        run: |
+          set -euo pipefail
+          # Match the full gate's workspace targets so Cargo reuses the same feature graph and test builds.
+          cargo test --workspace --lib --bins --tests raw_outlier_tests 2>&1 | tee ../raw-regression.log
+          # A renamed or removed module must not silently pass by selecting zero tests.
+          grep -Eq '^test files::load::raw_outlier_tests::[^ ]+ \.\.\. ok$' ../raw-regression.log
       - name: Run complete upstream gate
         working-directory: upstream
         run: |
           set -euo pipefail
-          timeout --signal=TERM --kill-after=30s 80m cargo xtask ci 2>&1 | tee ../full-gate.log
+          timeout --signal=TERM --kill-after=30s 120m cargo xtask ci 2>&1 | tee ../full-gate.log
       - name: Install exactly matching wasm-bindgen CLI
         run: |
           BINDGEN_VERSION=$(python3 -c 'import tomllib; d=tomllib.load(open("upstream/Cargo.lock", "rb")); print(next(p["version"] for p in d["package"] if p["name"] == "wasm-bindgen"))')
@@ -108,6 +116,7 @@ jobs:
           name: iphone-r1-gate-evidence
           path: |
             upstream/target/ci/
+            raw-regression.log
             full-gate.log
             build-provenance.json
           if-no-files-found: warn
