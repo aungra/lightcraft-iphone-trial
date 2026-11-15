@@ -66,6 +66,7 @@ jobs:
         with:
           workspaces: upstream -> target
           key: iphone-r1-rust-1.100.0-fonts-b076417b
+          cache-on-failure: true
       - name: Check cloud runner capacity
         run: |
           df -h .

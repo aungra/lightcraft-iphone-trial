@@ -151,7 +151,7 @@ index 66e377a..a77b1a1 100644
          panels::second::show(self, &ctx);
          if notice_blocks {
 diff --git a/crates/ui-egui/src/dialogs.rs b/crates/ui-egui/src/dialogs.rs
-index 91d9dd2..f3ccadf 100644
+index 91d9dd2..11d7489 100644
 --- a/crates/ui-egui/src/dialogs.rs
 +++ b/crates/ui-egui/src/dialogs.rs
 @@ -1,3 +1,4 @@
@@ -159,7 +159,22 @@ index 91d9dd2..f3ccadf 100644
  //! Modal dialogs (new album, rename, create preset, choose settings to copy, export, about, shortcuts).
  
  use lightcraft_develop::{ControlSpec, Section, SettingsGroup, Track};
-@@ -239,6 +240,7 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
+@@ -220,6 +221,14 @@ pub(crate) fn prepare(app: &LightcraftApp, ui: &mut egui::Ui) {
+     }
+ }
+ 
++fn viewport_limit(screen: egui::Rect, compact: bool, top: Option<f32>) -> egui::Vec2 {
++    if !compact {
++        return egui::Vec2::INFINITY;
++    }
++    let vertical_margin = top.map_or(16.0, |top| top + 8.0);
++    egui::vec2((screen.width() - 16.0).max(1.0), (screen.height() - vertical_margin).max(1.0))
++}
++
+ /// Draw the open dialog. `blocked` is true when a quit prompt or settings notice was on screen at
+ /// the start of this frame: the dialog is still drawn (its state is preserved), but none of its raw
+ /// keyboard/backdrop handling may act. The caller freezes `blocked` for the whole frame so the
+@@ -239,6 +248,7 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
      }
      let t = Tokens::get(ctx);
      let screen = ctx.content_rect();
@@ -167,8 +182,11 @@ index 91d9dd2..f3ccadf 100644
      // The backdrop is an area below the dialog window (a bare `Middle` layer painter would be
      // painted after every area — i.e. over the dialog too). Like a macOS sheet, the dialog leaves
      // the integrated title bar lit: the window buttons the OS draws over it do not dim.
-@@ -280,7 +282,7 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
+@@ -278,9 +288,10 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
+     // row stays where it is (centred like the others, the row jumped with each tab's height)
+     let settings = matches!(dlg, Dialog::Settings { .. });
      let top = (screen.height() * 0.08).clamp(DIALOG_SCREEN_MARGIN, 96.0);
++    let limit = viewport_limit(screen, compact, settings.then_some(top));
      let body_max =
          if settings { screen.height() - top - DIALOG_SCREEN_MARGIN - chrome } else { screen.height() - 2.0 * DIALOG_SCREEN_MARGIN - chrome }
 -            .max(DIALOG_MIN_BODY);
@@ -176,7 +194,7 @@ index 91d9dd2..f3ccadf 100644
      let widest_id = window_id.with("widest");
      let widest = if settings { ctx.data(|d| d.get_temp::<f32>(widest_id)).unwrap_or(0.0).min(screen.width() * 0.9) } else { 0.0 };
      let mut content_w = 0.0f32;
-@@ -291,24 +293,32 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
+@@ -291,24 +302,31 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
          .id(window_id)
          .collapsible(false)
          .resizable(import)
@@ -202,8 +220,7 @@ index 91d9dd2..f3ccadf 100644
 -            Dialog::ManageEffects { .. } => 560.0,
 -            _ => 380.0,
 -        })
-+        .max_width(if compact { (screen.width() - 16.0).max(1.0) } else { f32::INFINITY })
-+        .max_height(if compact { (screen.height() - if settings { top + 8.0 } else { 16.0 }).max(1.0) } else { f32::INFINITY })
++        .max_size(limit)
 +        .default_width(
 +            (match dlg {
 +                Dialog::Import { .. } => crate::import::DIALOG_SIZE[0],
@@ -218,12 +235,12 @@ index 91d9dd2..f3ccadf 100644
 +                Dialog::ManageEffects { .. } => 560.0,
 +                _ => 380.0_f32,
 +            })
-+            .min(if compact { (screen.width() - 16.0).max(1.0) } else { f32::INFINITY }),
++            .min(limit.x),
 +        )
          .show(ctx, |ui| {
              // Disabled, not skipped: the dialog keeps its layout and state, but a raw event in the
              // first prompt frame cannot toggle a checkbox or press a button underneath it. The
-@@ -318,6 +328,9 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
+@@ -318,6 +336,9 @@ pub fn show(app: &mut LightcraftApp, ctx: &egui::Context, blocked: bool) {
                  ui.disable();
              }
              ui.spacing_mut().item_spacing.y = 8.0;
@@ -233,7 +250,7 @@ index 91d9dd2..f3ccadf 100644
              body_h = dialog_body(ui, (!import && !print).then_some(title.as_str()), body_max, |ui| {
                  dialog_content(app, ui, &t, body_max, &mut confirm, &mut close, &mut dlg)
              });
-@@ -2043,6 +2056,10 @@ fn about_body(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, dlg: &mut
+@@ -2043,6 +2064,10 @@ fn about_body(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, dlg: &mut
          2 => crate::credits::models_ui(ui),
          _ => {
              ui.label(egui::RichText::new("LightCraft").font(t.semibold(20.0)).color(t.text));
@@ -846,7 +863,7 @@ index 0000000..a38f2ed
 +    assert!(h.app.widgets.iter().any(|(id, _)| id == "compact:menu-button"));
 +}
 diff --git a/crates/ui-egui/src/panels/detail.rs b/crates/ui-egui/src/panels/detail.rs
-index 2a6a83f..ac5d7a4 100644
+index 2a6a83f..8ec42d3 100644
 --- a/crates/ui-egui/src/panels/detail.rs
 +++ b/crates/ui-egui/src/panels/detail.rs
 @@ -1,3 +1,4 @@
@@ -854,24 +871,33 @@ index 2a6a83f..ac5d7a4 100644
  //! The Detail (loupe) view: the developed photo, before/after, zoom & pan, the filmstrip, and the
  //! on-canvas tools (crop, brush/gradient masks, remove spots, white-balance picker).
  
-@@ -143,11 +144,21 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
+@@ -135,6 +136,19 @@ pub enum Gesture {
+     },
+ }
+ 
++fn filmstrip_height(app: &LightcraftApp, ui: &egui::Ui, default_height: f32) -> f32 {
++    if !app.ui.filmstrip || app.ui.fullscreen {
++        return 0.0;
++    }
++    if !super::compact::active(ui.ctx()) {
++        return default_height;
++    }
++    // Filmstrip cells need 46 points for padding and labels before their image. Hide
++    // the strip in a short viewport instead of giving its thumbnails negative heights.
++    let height = default_height.min(ui.max_rect().height() * 0.25);
++    if height >= 64.0 { height } else { 0.0 }
++}
++
+ /// Draw the Develop loupe: the optional filmstrip, the fitted or zoomed photo (before/after and
+ /// full-screen aware), crop overlays and the render requests for the current view, or, when no
+ /// photo is active, the empty-library message if the library is empty and "No photo selected"
+@@ -143,11 +157,10 @@ pub fn show(app: &mut LightcraftApp, ui: &mut egui::Ui) {
      let t = Tokens::get(ui.ctx());
      let full = ui.max_rect();
      let fullscreen = app.ui.fullscreen;
 -    let show_film = app.ui.filmstrip && !fullscreen;
 -    let film_h = if show_film { t.film_h } else { 0.0 };
-+    let film_h = if app.ui.filmstrip && !fullscreen {
-+        if super::compact::active(ui.ctx()) {
-+            // Filmstrip cells need 46 points for padding and labels before their image. Hide
-+            // the strip in a short viewport instead of giving its thumbnails negative heights.
-+            let height = t.film_h.min(full.height() * 0.25);
-+            if height >= 64.0 { height } else { 0.0 }
-+        } else {
-+            t.film_h
-+        }
-+    } else {
-+        0.0
-+    };
++    let film_h = filmstrip_height(app, ui, t.film_h);
      let canvas = Rect::from_min_max(full.min, pos2(full.right(), full.bottom() - film_h));
      app.canvas_rect = Some(canvas);
 -    if show_film {
@@ -939,3 +965,24 @@ index 407fc5f..cbb1fa9 100644
  /// The centred search field with its placeholder and focus ring.
  fn search_field(app: &mut LightcraftApp, ui: &mut egui::Ui, t: &Tokens, sr: Rect) {
      // search field (centred on the window)
+diff --git a/crates/ui-egui/src/render.rs b/crates/ui-egui/src/render.rs
+index e8c3a90..b2c0519 100644
+--- a/crates/ui-egui/src/render.rs
++++ b/crates/ui-egui/src/render.rs
+@@ -1,3 +1,4 @@
++// Modified for the unofficial iPhone trial (2026-11-16): equivalent Rust 1.100 lint cleanup.
+ //! Background rendering: engine [`RenderJob`]s run on a [`JobPool`]; results become textures.
+ //!
+ //! Each visible thing that needs pixels is a *slot* (a grid thumbnail, the loupe, the "before"
+@@ -658,10 +659,7 @@ impl Renderer {
+         if let Some(&(k, p)) = self.pending.get(&slot) {
+             return k != key || (p != priority && self.is_queued(slot));
+         }
+-        if self.textures.get(&slot).is_some_and(|t| t.key == key) || self.failed.get(&slot).is_some_and(|f| f.0 == key && f.2 == self.catalog_rev) {
+-            return false;
+-        }
+-        true
++        !(self.textures.get(&slot).is_some_and(|t| t.key == key) || self.failed.get(&slot).is_some_and(|f| f.0 == key && f.2 == self.catalog_rev))
+     }
+     /// Free a view slot's texture and stage cache (the view is no longer shown).
+     pub fn release(&mut self, slot: Slot) {
