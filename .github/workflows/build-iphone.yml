@@ -51,7 +51,9 @@ jobs:
           git -C upstream apply ../patches/iphone-layout.patch
           git -C upstream diff --check
       - name: Check viewport regression tests
-        run: node tests/test_viewport.mjs upstream/apps/lightcraft-web/index.html
+        run: |
+          node tests/test_viewport.mjs upstream/apps/lightcraft-web/index.html
+          node tests/test_startup.mjs upstream/apps/lightcraft-web/index.html
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
@@ -92,19 +94,19 @@ jobs:
       - name: Build modified web package
         working-directory: upstream
         env:
-          LIGHTCRAFT_VERSION: 0.21.1-iphone-r1
+          LIGHTCRAFT_VERSION: 0.21.1-iphone-r2
         run: |
           set -euo pipefail
           cargo xtask web
           bash packaging/web/package.sh --skip-build
       - name: Record successful build and compose candidate
         run: |
-          python3 scripts/record_candidate.py --source upstream --fonts craft-fonts --archive upstream/dist/release/lightcraft-web-0.21.1-iphone-r1.zip --output build-provenance.json
-          python3 scripts/build_site.py --patched-archive upstream/dist/release/lightcraft-web-0.21.1-iphone-r1.zip --provenance build-provenance.json
+          python3 scripts/record_candidate.py --source upstream --fonts craft-fonts --archive upstream/dist/release/lightcraft-web-0.21.1-iphone-r2.zip --output build-provenance.json
+          python3 scripts/build_site.py --patched-archive upstream/dist/release/lightcraft-web-0.21.1-iphone-r2.zip --provenance build-provenance.json
       - name: Upload candidate for review (no publication)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: iphone-r1-candidate
+          name: iphone-r2-candidate
           path: _site
           include-hidden-files: true
           if-no-files-found: error
@@ -113,7 +115,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: iphone-r1-gate-evidence
+          name: iphone-r2-gate-evidence
           path: |
             upstream/target/ci/
             raw-regression.log

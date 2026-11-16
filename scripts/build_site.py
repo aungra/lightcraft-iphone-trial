@@ -30,7 +30,7 @@ REQUIRED_FILES = {
     "LICENSE-MIT", "LICENSE-APACHE", "NOTICE", "HOSTING.md",
 }
 REPO_ROOT = Path(__file__).resolve().parent.parent
-IPHONE_ID = "iphone-r1"
+IPHONE_ID = "iphone-r2"
 FONTS_COMMIT = "b076417b5880bd4154bd22f00695b1d28c6bea83"
 RUST_VERSION = "1.100.0"
 
@@ -136,6 +136,39 @@ def file_manifest(directory):
     return files
 
 
+def preserve_r1(stage):
+    """Retain the published revision byte-for-byte, using a reviewed immutable manifest."""
+    expected = json.loads((REPO_ROOT / "releases/iphone-r1-files.json").read_text())
+    if not REQUIRED_FILES.issubset(expected):
+        raise ValueError("Previous revision manifest is incomplete.")
+    app = stage / "iphone-r1"
+    app.mkdir()
+    for name, meta in expected.items():
+        path = PurePosixPath(name)
+        if path.is_absolute() or ".." in path.parts or "\\" in name:
+            raise ValueError("Unsafe previous revision path.")
+        target = app / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Identical official assets need not be fetched a second time.
+        official = stage / f"v{VERSION}" / name
+        if official.is_file() and sha256(official) == meta["sha256"]:
+            shutil.copyfile(official, target)
+        else:
+            request = urllib.request.Request("https://lightcraft.aun-graphic.jp/iphone-r1/" + name,
+                                             headers={"Accept-Encoding": "identity"})
+            with urllib.request.urlopen(request, timeout=60) as response, target.open("xb") as output:
+                count = 0
+                while chunk := response.read(1024 * 1024):
+                    count += len(chunk)
+                    if count > meta["bytes"]:
+                        raise ValueError("Previous revision exceeds its pinned size.")
+                    output.write(chunk)
+        if target.stat().st_size != meta["bytes"] or sha256(target) != meta["sha256"]:
+            raise ValueError(f"Published iphone-r1 has changed: {name}")
+    if file_manifest(app) != expected:
+        raise ValueError("Previous revision differs from the pinned manifest.")
+
+
 def add_iphone_build(stage, archive, proof_path):
     proof = json.loads(proof_path.read_text(encoding="utf-8"))
     required = {
@@ -164,6 +197,8 @@ def add_iphone_build(stage, archive, proof_path):
         "made, endorsed, certified or supported by that team.\n\n"
         "Changes: compact portrait menus and editing panels, Safari visible-viewport\n"
         "handling, and a browser-compatible timing fix in the image loader.\n"
+        "Also: opt-in Japanese startup without the separate Chinese font, and local import timings.\n"
+        "Use ?workers=1&font=ja for Japanese, or omit font=ja to retain Chinese glyph coverage.\n"
         "See iphone-layout.patch, MODIFICATIONS.txt and build-provenance.json for the\n"
         "exact changes and pinned inputs. iPhone runtime acceptance is separate from CI.\n\n"
         "Upstream source: https://github.com/storytold/lightcraft/tree/v0.21.1\n"
@@ -174,7 +209,7 @@ def add_iphone_build(stage, archive, proof_path):
     )
     (app / "MODIFICATIONS.txt").write_text(
         "Unofficial modified build based on LightCraft v0.21.1.\n"
-        "iPhone portrait layout and browser image-loader timing changes; see iphone-layout.patch and build-provenance.json.\n"
+        "iPhone portrait layout, Japanese startup and local performance diagnostics; see iphone-layout.patch and build-provenance.json.\n"
         "This build is not made, endorsed or supported by the ArtCraft Team.\n",
         encoding="utf-8",
     )
@@ -213,6 +248,7 @@ def build_site(archive_path, destination, patched_archive=None, provenance=None)
         }
         (stage / "deployment.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         if patched_archive:
+            preserve_r1(stage)
             proof = add_iphone_build(stage, patched_archive, provenance)
             candidate = {"build": proof, "files": file_manifest(stage)}
             (stage / "candidate.json").write_text(json.dumps(candidate, indent=2) + "\n", encoding="utf-8")

@@ -2,7 +2,7 @@
 
 [LightCraft v0.21.1](https://github.com/storytold/lightcraft/releases/tag/v0.21.1)を基にしたiPhone向けレイアウト修正版と、無改変の公式Web配布物をGitHub Pagesで配信するリポジトリです。開発元による運営・承認・サポートを示すものではありません。
 
-- iPhone向け修正版の公開先: **https://lightcraft.aun-graphic.jp/iphone-r1/?workers=1**
+- iPhone向け修正版の公開先: **https://lightcraft.aun-graphic.jp/iphone-r2/?workers=1**
 - 無改変の公式版: https://lightcraft.aun-graphic.jp/v0.21.1/?workers=1
 
 修正版は、完全な品質ゲート・成果物レビュー・手動公開を終えるまで利用可能とは扱いません。同じオリジンに置くため、ブラウザ内のライブラリは両版で共有されます。切り替え前にバックアップし、同時に2つのタブで開かないでください。
@@ -36,13 +36,13 @@
 1. `codex/`ブランチからPRを作ります。**Build and test iPhone candidate**はPRまたは手動で実行され、公開権限を持ちません。
 2. 固定ソース・フォントを取得してパッチを適用し、Python梱包試験と、実際のWebページ内モジュールを使うNode viewport試験を実行します。
 3. **`cargo xtask ci`を省略せず実行**します。fmt・clippy・HEIF・tests・parity・layers・assets・roots・WASMの全段階成功を要求し、`--quick`の結果では公開できません。実行は1ランナーで順番に進め、ゲートの内部期限は80分、ジョブ全体は150分です。GPUやコーパス等の試験スキップは報告書へ残し、実機合格と同一視しません。
-4. 成功後、`cargo xtask web`と公式の梱包スクリプトで修正版を作ります。`scripts/build_site.py`が無改変`/v0.21.1/`と修正版`/iphone-r1/`をまとめます。
-5. **`iphone-r1-candidate`**（14日保持）を取得してレビューします。全ファイルのSHA-256を含む`candidate.json`、修正版の`build-provenance.json`、適用パッチ、ライセンスを同梱します。成功／失敗時とも**`iphone-r1-gate-evidence`**へゲート報告書とログを保存します。
+4. 成功後、`cargo xtask web`と公式の梱包スクリプトで修正版を作ります。`scripts/build_site.py`が無改変`/v0.21.1/`と修正版`/iphone-r2/`をまとめます。
+5. **`iphone-r2-candidate`**（14日保持）を取得してレビューします。全ファイルのSHA-256を含む`candidate.json`、修正版の`build-provenance.json`、適用パッチ、ライセンスを同梱します。成功／失敗時とも**`iphone-r2-gate-evidence`**へゲート報告書とログを保存します。
 6. レビューした内容をPR経由で`main`に統合します。候補のソースツリーと`main`のツリーが一致していることが必要です。レビュー後に内容を変更した場合は新しい候補が必要です。
 7. `main`で **Publish reviewed iPhone candidate → Run workflow**を手動実行し、成功した候補の`candidate_run_id`と`candidate.json`内の`build.source_commit`（40桁）を指定します。
 8. 公開ジョブは、指定実行がこのリポジトリの成功した候補ビルドであること、ソースとパッチがレビュー済み`main`と一致すること、成果物全ファイルのサイズとハッシュを検証します。再ビルドせず、その成果物をPagesへ公開します。
 
-以前の「公式版だけを再公開する」ワークフローは置き換えました。通常操作で`/iphone-r1/`を消してしまう再公開経路は残しません。旧版への操作上の切り替えは、保持した`/v0.21.1/`を開きます。自動の本番公開・スケジュール更新・最新版追従はありません。公開された`iphone-r1`の内容を後で変更する場合は、別のリビジョン用パスを新しい作業として用意します。
+以前の「公式版だけを再公開する」ワークフローは置き換えました。通常操作で`/iphone-r2/`を消してしまう再公開経路は残しません。旧版への操作上の切り替えは、保持した`/v0.21.1/`を開きます。自動の本番公開・スケジュール更新・最新版追従はありません。公開された`iphone-r2`の内容を後で変更する場合は、別のリビジョン用パスを新しい作業として用意します。
 
 ## GitHub Pagesと独自ドメイン
 
@@ -92,3 +92,32 @@ Editパネルのプレビュー代替警告を確認します。ブラウザ内�
 [公式ホスティング手順](https://github.com/storytold/lightcraft/blob/v0.21.1/packaging/web/README.md)、[Web版仕様](https://github.com/storytold/lightcraft/blob/v0.21.1/docs/web.md)、[RAW検証](https://github.com/storytold/lightcraft/blob/v0.21.1/docs/raw/coverage.tsv)、[ブランド条件](https://github.com/storytold/lightcraft/blob/v0.21.1/docs/brand/LICENSE-brand.txt)。
 
 修正版はLightCraftを基にした非公式ビルドと明示し、ArtCraftのブランドマークを除去します。MIT／Apache-2.0、NOTICEと各フォントのライセンスは保持します。無改変の公式版は独立したパスにそのまま保持します。
+
+
+## r2: Japanese startup and local measurements
+
+The recommended entry is `/iphone-r2/?workers=1&font=ja`. Japanese BIZ UDPGothic
+remains embedded in WASM. This entry does not request the separate Chinese font;
+it reduces cold startup transfer by approximately 13.6 MB with the current gzip
+response. It is not a measured iPhone time or memory improvement. Chinese-only
+glyphs need `/iphone-r2/?workers=1` (the original full-font default). A saved
+Chinese UI preference is not detected by this explicit Japanese-only entry.
+
+`&profile=1` shows a **計測結果** button. It reports app download/compilation,
+library startup, first UI, picked-file reading/copying, hashing, browser storage,
+and catalog command duration. Catalog timing includes rejected/duplicate imports;
+it is not preview completion. No memory measurement or RAW/JPEG render-speed
+claim is made. The bounded 40-entry record stays in the tab, without file names,
+photo contents, persistence or telemetry. Refresh clears it. Stages can overlap;
+do not sum startup rows or interpret them as total import-to-preview time.
+
+The previously published `/iphone-r1/` remains byte-for-byte intact. Its exact
+file manifest is pinned in `releases/iphone-r1-files.json`; candidate packaging
+refuses missing/changed bytes. The official `/v0.21.1/` stays unchanged as well.
+The r2 cumulative source patch is covered by a new complete upstream CI gate.
+
+Performance references: [Resource Timing](https://developer.mozilla.org/en-US/docs/Web/API/PerformanceResourceTiming)
+and [Performance.now](https://developer.mozilla.org/en-US/docs/Web/API/Performance/now).
+Native RAW rendering benchmarks do not measure this startup-only change; the
+matching browser font-fetch regression test checks that Japanese startup makes
+zero Chinese-font requests. Real iPhone timings remain an acceptance step.
