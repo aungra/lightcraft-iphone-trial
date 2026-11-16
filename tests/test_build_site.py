@@ -86,6 +86,7 @@ class BuildTests(unittest.TestCase):
         (repository / "site/index.html").write_text("<a href='iphone-r1/'>Trial</a>")
         (repository / "patches/iphone-layout.patch").write_text("synthetic reviewed patch")
         self.enterContext(patch.object(builder, "REPO_ROOT", repository))
+        self.enterContext(patch.object(builder, "preserve_r1"))
         modified = self.directory / "modified.zip"
         with zipfile.ZipFile(modified, "w") as archive:
             for name in builder.REQUIRED_FILES | {"OFL-synthetic.txt"}:
@@ -107,14 +108,14 @@ class BuildTests(unittest.TestCase):
                 relative = Path(*Path(item.filename).parts[1:])
                 self.assertEqual(archive.read(item), (self.output / f"v{builder.VERSION}" / relative).read_bytes())
         candidate = json.loads((self.output / "candidate.json").read_text())
-        modified_readme = (self.output / "iphone-r1/README.md").read_text()
+        modified_readme = (self.output / f"{builder.IPHONE_ID}/README.md").read_text()
         self.assertIn("unofficial modified build", modified_readme)
         self.assertIn("browser-compatible timing fix", modified_readme)
         self.assertNotIn("<img", modified_readme.lower())
         self.assertNotIn("docs/brand/", modified_readme)
         self.assertEqual((self.output / "v0.21.1/README.md").read_text(), "synthetic content: README.md\n")
         verify_files(self.output, candidate["files"])
-        (self.output / "iphone-r1/index.html").write_text("changed after review")
+        (self.output / f"{builder.IPHONE_ID}/index.html").write_text("changed after review")
         with self.assertRaisesRegex(ValueError, "hashes differ"):
             verify_files(self.output, candidate["files"])
 

@@ -1,5 +1,5 @@
 diff --git a/apps/lightcraft-web/index.html b/apps/lightcraft-web/index.html
-index b088ad1..a2b40fc 100644
+index b088ad1..463ca75 100644
 --- a/apps/lightcraft-web/index.html
 +++ b/apps/lightcraft-web/index.html
 @@ -2,13 +2,17 @@
@@ -22,7 +22,7 @@ index b088ad1..a2b40fc 100644
      canvas#lightcraft_canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
      #lightcraft_loading {
        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-@@ -18,9 +22,42 @@
+@@ -18,23 +22,107 @@
    </style>
  </head>
  <body>
@@ -30,6 +30,7 @@ index b088ad1..a2b40fc 100644
    <canvas id="lightcraft_canvas"></canvas>
    <div id="lightcraft_loading">Loading LightCraft…</div>
    <div id="lightcraft_status" aria-live="polite"></div>
+-  <script type="module">
 +  </div></div>
 +  <script type="module" id="lightcraft-viewport-module">
 +    // Use the visible Safari area, including keyboard/toolbar changes. Do not reflow the UI
@@ -62,9 +63,160 @@ index b088ad1..a2b40fc 100644
 +      update();
 +    }
 +  </script>
-   <script type="module">
++  <script type="module" id="lightcraft-performance-module">
++    // Local, bounded diagnostics. No file names, photo contents or network reporting.
++    export function createTimings(limit = 40) {
++      const entries = [];
++      const allowed = new Set(["startup_download_compile", "startup_storage", "first_ui",
++        "import_read_copy", "import_hash", "import_storage", "import_catalog"]);
++      return {
++        add(value) {
++          if (!value || !allowed.has(value.stage) || !Number.isFinite(value.duration_ms) || value.duration_ms < 0
++              || !Number.isFinite(value.bytes) || value.bytes < 0) return;
++          entries.push({ stage: value.stage, duration_ms: Math.round(value.duration_ms), bytes: value.bytes });
++          if (entries.length > limit) entries.shift();
++        },
++        snapshot() { return entries.map(value => ({ ...value })); },
++      };
++    }
++    const timings = createTimings();
++    globalThis.lightcraftPerformance = timings;
++    window.addEventListener("lightcraft-performance", event => {
++      try { timings.add(JSON.parse(event.detail)); } catch { /* diagnostics never stop editing */ }
++    });
++    if (new URLSearchParams(location.search).get("profile") === "1") {
++      const button = document.createElement("button");
++      button.textContent = "計測結果";
++      button.style.cssText = "position:fixed;right:8px;bottom:max(8px,env(safe-area-inset-bottom));z-index:10000;min-height:44px;padding:8px 12px";
++      button.addEventListener("click", () => {
++        const labels = { startup_download_compile: "アプリ取得・準備", startup_storage: "ライブラリ起動",
++          first_ui: "起動から最初の画面", import_read_copy: "写真読み込み", import_hash: "写真の照合",
++          import_storage: "ブラウザへの保存", import_catalog: "ライブラリ登録" };
++        alert("計測結果（このタブ内のみ）\n" + timings.snapshot().map(e =>
++          `${labels[e.stage]}: ${(e.duration_ms / 1000).toFixed(2)}秒${e.bytes ? ` / ${(e.bytes / 1e6).toFixed(1)}MB` : ""}`).join("\n")
++          + "\n※プレビュー完成までの時間・メモリ使用量は含みません。登録は重複・失敗時も計測します。");
++      });
++      document.body.append(button);
++    }
++  </script>
++  <script type="module" id="lightcraft-startup-module">
      import init, { start, command } from "./lightcraft_web.js";
++    // Japanese glyphs are embedded in this pinned WASM. Opt in to the Japanese
++    // entry explicitly; the default retains the Chinese fallback for saved UI preferences.
++    export function needsChineseFont(search) {
++      return new URLSearchParams(search).get("font") !== "ja";
++    }
++    export async function loadChineseFont(search, fetcher) {
++      if (!needsChineseFont(search)) return new Uint8Array();
++      try {
++        const response = await fetcher("./lightcraft_zh_hans.otf");
++        return response.ok ? new Uint8Array(await response.arrayBuffer()) : new Uint8Array();
++      } catch { return new Uint8Array(); }
++    }
      (async () => {
++      const loading = document.getElementById("lightcraft_loading");
++      if (loading) loading.textContent = "LightCraftを読み込んでいます…";
++      const started = performance.now();
+       // The Chinese font is a separate file: embedding it would exceed the host's WASM size limit.
+       // Font-free development builds can still run, with the same missing-glyph warning as before.
+-      const chineseFont = fetch("./lightcraft_zh_hans.otf")
+-        .then(async response => response.ok ? new Uint8Array(await response.arrayBuffer()) : new Uint8Array())
+-        .catch(() => new Uint8Array());
++      const chineseFont = loadChineseFont(location.search, fetch);
+       // Compile once; the render workers (worker.js) instantiate the same compiled module.
+       const [module, font] = await Promise.all([
+         WebAssembly.compileStreaming(fetch("./lightcraft_web_bg.wasm")),
+         chineseFont,
+       ]);
++      globalThis.lightcraftPerformance.add({ stage: "startup_download_compile", duration_ms: performance.now() - started, bytes: 0 });
+       globalThis.lightcraftModule = module;
++      if (loading) loading.textContent = "写真ライブラリを開いています…";
+       await init({ module_or_path: module });
+       // automation: `await lightcraft.command("library.info", "{}")` → JSON text
+       globalThis.lightcraft = { command };
+diff --git a/apps/lightcraft-web/src/web.rs b/apps/lightcraft-web/src/web.rs
+index 7977391..d1d16d0 100644
+--- a/apps/lightcraft-web/src/web.rs
++++ b/apps/lightcraft-web/src/web.rs
+@@ -49,6 +49,17 @@ fn perf_now() -> f64 {
+     window().and_then(|w| w.performance()).map(|p| p.now()).unwrap_or(0.0)
+ }
+ 
++/// Bounded page diagnostics contain timings/counts only, never photo names or bytes.
++fn report_timing(stage: &str, started: f64, bytes: usize) {
++    let Some(w) = window() else { return };
++    let detail = json!({"stage": stage, "duration_ms": (perf_now() - started).max(0.0), "bytes": bytes});
++    let init = web_sys::CustomEventInit::new();
++    init.set_detail(&JsValue::from_str(&detail.to_string()));
++    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict("lightcraft-performance", &init) {
++        let _ = w.dispatch_event(&event);
++    }
++}
++
+ fn set_status(text: &str) {
+     if let Some(el) = window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id("lightcraft_status")) {
+         el.set_text_content(Some(text));
+@@ -108,7 +119,10 @@ impl Options {
+ 
+ /// Store a picked/dropped file (bytes into browser storage, then queue its import).
+ async fn store_file(originals: Originals, backend: Option<Backend>, name: String, bytes: Vec<u8>, ctx: egui::Context) {
++    let started = perf_now();
+     let hash = content_hash(&bytes);
++    report_timing("import_hash", started, bytes.len());
++    let started = perf_now();
+     if let Some(b) = &backend
+         && let Err(e) = b.write(&storage_key(&hash), &bytes).await
+     {
+@@ -116,14 +130,20 @@ async fn store_file(originals: Originals, backend: Option<Backend>, name: String
+         notice(format!("{name} was not added: browser storage refused it ({e}). Free up space or back up and clear old photos."));
+         return;
+     }
++    report_timing("import_storage", started, bytes.len());
+     originals.added(&name, &hash, Arc::from(bytes));
+     ctx.request_repaint();
+ }
+ 
+ /// Read a browser `File` into storage.
+ async fn read_file(originals: Originals, backend: Option<Backend>, file: web_sys::File, ctx: egui::Context) {
++    let started = perf_now();
+     match wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
+-        Ok(buf) => store_file(originals, backend, file.name(), js_sys::Uint8Array::new(&buf).to_vec(), ctx).await,
++        Ok(buf) => {
++            let bytes = js_sys::Uint8Array::new(&buf).to_vec();
++            report_timing("import_read_copy", started, bytes.len());
++            store_file(originals, backend, file.name(), bytes, ctx).await;
++        }
+         Err(e) => log::warn!("reading {}: {e:?}", file.name()),
+     }
+ }
+@@ -482,6 +502,7 @@ async fn boot(opts: Options, bridge: Option<crate::host::Bridge>) -> Boot {
+         index.len(),
+         index.total() as f64 / 1e6
+     );
++    report_timing("startup_storage", t0, 0);
+     Boot { opts, backend, files, index, lib_dir, bridge, load_error }
+ }
+ 
+@@ -722,7 +743,10 @@ impl WebApp {
+         }
+         let Some(paths) = drained.pending else { return };
+         if !paths.is_empty() {
+-            match self.app.run("library.import", json!({"paths": paths})) {
++            let started = perf_now();
++            let result = self.app.run("library.import", json!({"paths": paths}));
++            report_timing("import_catalog", started, 0);
++            match result {
+                 // what the import did, not what was submitted: duplicates and unsupported files add nothing,
+                 // a drop that only finds duplicates says nothing (as the desktop import's toast does when it
+                 // shows where they are), and one whose files could not be read says so
+@@ -927,6 +951,7 @@ impl eframe::App for WebApp {
+         }
+         if !self.first_frame_logged && !self.app.widgets.is_empty() {
+             self.first_frame_logged = true;
++            report_timing("first_ui", 0.0, 0);
+             log::info!("lightcraft first UI frame at {:.0} ms after navigation start", perf_now());
+         }
+     }
 diff --git a/crates/engine/src/files/load.rs b/crates/engine/src/files/load.rs
 index 0e396dd..7c34976 100644
 --- a/crates/engine/src/files/load.rs
